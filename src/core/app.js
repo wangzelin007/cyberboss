@@ -1122,6 +1122,9 @@ class CyberbossApp {
       case "chunk":
         await this.handleChunkCommand(normalized, command);
         return;
+      case "tz":
+        await this.handleTimezoneCommand(normalized, command);
+        return;
       case "yes":
       case "always":
       case "no":
@@ -1504,6 +1507,44 @@ class CyberbossApp {
     await this.channelAdapter.sendText({
       userId: normalized.senderId,
       text: `✅ Minimum merge chunk set to ${updated} characters. Shorter fragments will be merged into one message up to this size.`,
+      contextToken: normalized.contextToken,
+    });
+  }
+
+  async handleTimezoneCommand(normalized, command) {
+    const arg = normalizeCommandArgument(command.args);
+    if (!arg) {
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: `🌍 Current timezone: ${this.config.timezone}\nUsage: /tz <IANA timezone> (e.g. /tz Australia/Sydney)`,
+        contextToken: normalized.contextToken,
+      });
+      return;
+    }
+    try {
+      Intl.DateTimeFormat(undefined, { timeZone: arg });
+    } catch {
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: `⚠️  Invalid timezone "${arg}". Use an IANA timezone name like Asia/Shanghai, Australia/Sydney, Europe/London.`,
+        contextToken: normalized.contextToken,
+      });
+      return;
+    }
+    this.config.timezone = arg;
+    try {
+      saveTimezoneConfig(this.config.timezoneConfigFile, arg);
+    } catch {
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: `⚠️  Timezone switched to ${arg} for this session, but failed to persist. It will revert on restart.`,
+        contextToken: normalized.contextToken,
+      });
+      return;
+    }
+    await this.channelAdapter.sendText({
+      userId: normalized.senderId,
+      text: `✅ Timezone switched to ${arg}`,
       contextToken: normalized.contextToken,
     });
   }
@@ -2045,7 +2086,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-module.exports = { CyberbossApp };
+module.exports = { CyberbossApp, loadTimezoneConfig, saveTimezoneConfig };
 
 function parseChannelCommand(text) {
   const normalized = typeof text === "string" ? text.trim() : "";
@@ -2350,7 +2391,7 @@ function buildInboundText(normalized, persisted = {}, config = {}, options = {})
   const failed = Array.isArray(persisted?.failed) ? persisted.failed : [];
   const userName = String(config?.userName || "").trim() || "the user";
   const runtimeId = normalizeText(options?.runtimeId).toLowerCase();
-  const localTime = formatWechatLocalTime(normalized?.receivedAt);
+  const localTime = formatWechatLocalTime(normalized?.receivedAt, config?.timezone);
   const lines = [];
   if (localTime) {
     lines.push(`[${localTime}]`);
@@ -2643,7 +2684,7 @@ function groupDeferredReplies(replies) {
   return grouped;
 }
 
-function formatWechatLocalTime(receivedAt) {
+function formatWechatLocalTime(receivedAt, timezone) {
   const value = typeof receivedAt === "string" ? receivedAt.trim() : "";
   if (!value) {
     return "";
@@ -2653,7 +2694,7 @@ function formatWechatLocalTime(receivedAt) {
     return value;
   }
   return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
+    timeZone: timezone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -2672,4 +2713,24 @@ function stringifyRpcId(value) {
 
 function hasRpcId(value) {
   return stringifyRpcId(value) !== "";
+}
+
+function loadTimezoneConfig(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    const parsed = JSON.parse(raw);
+    const tz = typeof parsed?.timezone === "string" ? parsed.timezone.trim() : "";
+    if (tz) {
+      Intl.DateTimeFormat(undefined, { timeZone: tz });
+      return tz;
+    }
+  } catch {
+    // ignore
+  }
+  return "";
+}
+
+function saveTimezoneConfig(filePath, timezone) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify({ timezone }, null, 2));
 }

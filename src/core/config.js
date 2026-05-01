@@ -1,3 +1,4 @@
+const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
@@ -74,6 +75,8 @@ function readConfig() {
     copilotModel: readTextEnv("CYBERBOSS_COPILOT_MODEL"),
     sessionsFile: path.join(stateDir, "sessions.json"),
     startWithCheckin: (mode === "start" && hasArgFlag(argv, "--checkin")) || readBoolEnv("CYBERBOSS_ENABLE_CHECKIN"),
+    timezoneConfigFile: path.join(stateDir, "timezone-config.json"),
+    timezone: readTextEnv("CYBERBOSS_TIMEZONE") || loadPersistedTimezone(path.join(stateDir, "timezone-config.json")) || Intl.DateTimeFormat().resolvedOptions().timeZone,
   };
 }
 
@@ -163,6 +166,21 @@ function resolveLocationServerEnabled({ mode, enabled }) {
     return enabled;
   }
   return false;
+}
+
+function loadPersistedTimezone(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    const parsed = JSON.parse(raw);
+    const tz = typeof parsed?.timezone === "string" ? parsed.timezone.trim() : "";
+    if (tz) {
+      Intl.DateTimeFormat(undefined, { timeZone: tz });
+      return tz;
+    }
+  } catch {
+    // ignore: file missing, malformed, or invalid timezone
+  }
+  return "";
 }
 
 module.exports = { readConfig };

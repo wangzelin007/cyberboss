@@ -23,7 +23,7 @@ async function runSystemCheckinPoller(config) {
   while (true) {
     currentRange = checkinConfigStore.getRange(defaultRange);
     const delayMs = pickRandomDelayMs(currentRange.minIntervalMs, currentRange.maxIntervalMs);
-    const wakeAt = formatLocalTime(Date.now() + delayMs);
+    const wakeAt = formatLocalTime(Date.now() + delayMs, config.timezone);
     console.log(`[cyberboss] next checkin in ${Math.round(delayMs / 60000)}m at ${wakeAt}`);
     await sleep(delayMs);
 
@@ -84,13 +84,13 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function formatLocalTime(value) {
+function formatLocalTime(value, timezone) {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) {
     return String(value || "");
   }
   return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
+    timeZone: timezone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",

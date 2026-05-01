@@ -142,6 +142,13 @@ const COMMAND_GROUPS = [
         weixin: ["/chunk <number>"],
         status: "active",
       },
+      {
+        action: "config.timezone",
+        summary: "Show or switch the timezone (IANA name, e.g. Australia/Sydney)",
+        terminal: [],
+        weixin: ["/tz", "/tz <timezone>"],
+        status: "active",
+      },
     ],
   },
   {
@@ -344,6 +351,7 @@ function actionEmoji(action) {
     case "model.select": return "🤖";
     case "app.help": return "❓";
     case "app.star": return "⭐️";
+    case "config.timezone": return "🌍";
     default: return "•";
   }
 }
