@@ -446,3 +446,4 @@ If you want the strongest "cyberboss" effect, let the agent grow its pacing thro
 This project is built for local-first personal deployment. It continuously processes private chat content, reminders, life traces, and other highly sensitive personal context. I do not want that workflow to be repackaged into a closed cloud service that hides both the code path and the data path from the user.
 
 Because of that, this project is released under `AGPL-3.0-only`. If you modify it, extend it, and offer it to users over a network, you must provide the full corresponding source code under the AGPL terms.
+# Copilot Review Test
