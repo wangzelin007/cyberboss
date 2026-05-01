@@ -7,6 +7,8 @@ function readConfig() {
   const mode = argv[0] || "";
   const stateDir = process.env.CYBERBOSS_STATE_DIR || path.join(os.homedir(), ".cyberboss");
 
+  const timezoneConfigFile = path.join(stateDir, "timezone-config.json");
+
   return {
     mode,
     argv,
@@ -75,8 +77,8 @@ function readConfig() {
     copilotModel: readTextEnv("CYBERBOSS_COPILOT_MODEL"),
     sessionsFile: path.join(stateDir, "sessions.json"),
     startWithCheckin: (mode === "start" && hasArgFlag(argv, "--checkin")) || readBoolEnv("CYBERBOSS_ENABLE_CHECKIN"),
-    timezoneConfigFile: path.join(stateDir, "timezone-config.json"),
-    timezone: readTextEnv("CYBERBOSS_TIMEZONE") || loadPersistedTimezone(path.join(stateDir, "timezone-config.json")) || Intl.DateTimeFormat().resolvedOptions().timeZone,
+    timezoneConfigFile,
+    timezone: validateTimezone(readTextEnv("CYBERBOSS_TIMEZONE")) || loadPersistedTimezone(timezoneConfigFile) || Intl.DateTimeFormat().resolvedOptions().timeZone,
   };
 }
 
@@ -181,6 +183,16 @@ function loadPersistedTimezone(filePath) {
     // ignore: file missing, malformed, or invalid timezone
   }
   return "";
+}
+
+function validateTimezone(tz) {
+  if (!tz) return "";
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone: tz });
+    return tz;
+  } catch {
+    return "";
+  }
 }
 
 module.exports = { readConfig };
