@@ -14,7 +14,7 @@ function buildResponseLanguageInstruction(language) {
   if (!lang || lang === "auto") {
     return "";
   }
-  return `\nIMPORTANT: You MUST respond in ${language} regardless of the user's language. This is a strict requirement.\n`;
+  return `\nIMPORTANT: You MUST respond in ${lang} regardless of the user's language. This is a strict requirement.\n`;
 }
 
 function renderInstructionTemplate(template, config = {}) {
