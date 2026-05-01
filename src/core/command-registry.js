@@ -149,6 +149,13 @@ const COMMAND_GROUPS = [
         weixin: ["/tz", "/tz <timezone>"],
         status: "active",
       },
+      {
+        action: "config.language",
+        summary: "Set AI response language (e.g. en, zh, auto)",
+        terminal: [],
+        weixin: ["/lang", "/lang <language>"],
+        status: "active",
+      },
     ],
   },
   {
@@ -349,6 +356,7 @@ function actionEmoji(action) {
     case "approval.reject_once": return "❌";
     case "model.inspect":
     case "model.select": return "🤖";
+    case "config.language": return "🌐";
     case "app.help": return "❓";
     case "app.star": return "⭐️";
     case "config.timezone": return "🌍";
