@@ -57,7 +57,7 @@ function loadInstructionFile(filePath, config = {}) {
   }
   try {
     const stat = fs.statSync(normalizedPath);
-    const cacheKey = `${normalizedPath}:${stat.mtimeMs}`;
+    const cacheKey = buildInstructionCacheKey(normalizedPath, stat.mtimeMs, config);
     const cached = instructionCache.get(cacheKey);
     if (cached !== undefined) {
       return cached;
@@ -69,6 +69,21 @@ function loadInstructionFile(filePath, config = {}) {
   } catch {
     return "";
   }
+}
+
+function buildInstructionCacheKey(filePath, mtimeMs, config = {}) {
+  // Cache key must include every config field that affects renderInstructionTemplate's
+  // output. Otherwise toggling /lang (or other render-time config) returns a stale
+  // string baked with the previous value, since the template file's mtime never changes.
+  // Use JSON.stringify so values containing ":" (e.g., Windows paths, user names with
+  // colons) cannot collide with neighboring fields.
+  return JSON.stringify([
+    filePath,
+    mtimeMs,
+    String(config?.userName || ""),
+    String(config?.userGender || "").toLowerCase(),
+    String(config?.responseLanguage || "").toLowerCase(),
+  ]);
 }
 
 module.exports = {
