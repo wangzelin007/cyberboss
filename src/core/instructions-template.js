@@ -9,12 +9,19 @@ function resolveUserPronoun(gender) {
   return "她";
 }
 
+const LANGUAGE_DISPLAY_NAMES = {
+  en: "English",
+  zh: "Chinese",
+  ja: "Japanese",
+};
+
 function buildResponseLanguageInstruction(language) {
   const lang = String(language || "").trim().toLowerCase();
   if (!lang || lang === "auto") {
     return "";
   }
-  return `\nIMPORTANT: You MUST respond in ${lang} regardless of the user's language. This is a strict requirement.\n`;
+  const displayName = LANGUAGE_DISPLAY_NAMES[lang] || lang;
+  return `\nIMPORTANT: You MUST respond in ${displayName} regardless of the user's language. This is a strict requirement.\n`;
 }
 
 function renderInstructionTemplate(template, config = {}) {

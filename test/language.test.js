@@ -102,3 +102,34 @@ test("handleLanguageCommand rejects prompt injection attempt", async () => {
   assert.equal(appLike.config.responseLanguage, "auto");
   assert.match(sent[0].text, /Unsupported language/);
 });
+
+test("renderInstructionTemplate uses full language names", () => {
+  const { renderInstructionTemplate } = require("../src/core/instructions-template");
+  const template = "{{RESPONSE_LANGUAGE}}";
+  assert.match(renderInstructionTemplate(template, { responseLanguage: "zh" }), /respond in Chinese/);
+  assert.match(renderInstructionTemplate(template, { responseLanguage: "en" }), /respond in English/);
+  assert.match(renderInstructionTemplate(template, { responseLanguage: "ja" }), /respond in Japanese/);
+  assert.equal(renderInstructionTemplate(template, { responseLanguage: "auto" }).trim(), "");
+});
+
+test("loadInstructionFile cache is keyed by config so /lang switches take effect", () => {
+  const { loadInstructionFile } = require("../src/adapters/runtime/shared-instructions");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-lang-cache-test-"));
+  const tplPath = path.join(dir, "tpl.md");
+  fs.writeFileSync(tplPath, "Hello {{USER_NAME}}.{{RESPONSE_LANGUAGE}}");
+
+  const config = { weixinOperationsFile: tplPath, userName: "Alice", responseLanguage: "en" };
+  const renderedEn = loadInstructionFile(tplPath, config);
+  assert.match(renderedEn, /respond in English/);
+
+  // Mtime unchanged, but responseLanguage flipped — must NOT return cached "English" version.
+  config.responseLanguage = "zh";
+  const renderedZh = loadInstructionFile(tplPath, config);
+  assert.match(renderedZh, /respond in Chinese/);
+  assert.doesNotMatch(renderedZh, /respond in English/);
+
+  // Switching back to auto strips the instruction entirely.
+  config.responseLanguage = "auto";
+  const renderedAuto = loadInstructionFile(tplPath, config);
+  assert.doesNotMatch(renderedAuto, /respond in/);
+});
