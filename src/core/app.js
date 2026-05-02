@@ -1548,17 +1548,17 @@ class CyberbossApp {
   }
 
   async applyTimezone(normalized, timezone) {
-    this.config.timezone = timezone;
     try {
       saveTimezoneConfig(this.config.timezoneConfigFile, timezone);
     } catch {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: `⚠️  Timezone switched to ${timezone} for this session, but failed to persist.`,
+        text: `⚠️  Failed to save timezone. Please check disk permissions and try again.`,
         contextToken: normalized.contextToken,
       });
       return;
     }
+    this.config.timezone = timezone;
     await this.channelAdapter.sendText({
       userId: normalized.senderId,
       text: `✅ Timezone switched to ${timezone}`,
