@@ -75,10 +75,15 @@ function buildInstructionCacheKey(filePath, mtimeMs, config = {}) {
   // Cache key must include every config field that affects renderInstructionTemplate's
   // output. Otherwise toggling /lang (or other render-time config) returns a stale
   // string baked with the previous value, since the template file's mtime never changes.
-  const userName = String(config?.userName || "").trim();
-  const userGender = String(config?.userGender || "").trim().toLowerCase();
-  const language = String(config?.responseLanguage || "").trim().toLowerCase();
-  return `${filePath}:${mtimeMs}:${userName}:${userGender}:${language}`;
+  // Use JSON.stringify so values containing ":" (e.g., Windows paths, user names with
+  // colons) cannot collide with neighboring fields.
+  return JSON.stringify([
+    filePath,
+    mtimeMs,
+    String(config?.userName || ""),
+    String(config?.userGender || "").toLowerCase(),
+    String(config?.responseLanguage || "").toLowerCase(),
+  ]);
 }
 
 module.exports = {
@@ -86,5 +91,4 @@ module.exports = {
   buildInstructionRefreshText,
   loadWechatInstructions,
   loadInstructionFile,
-  buildInstructionCacheKey,
 };

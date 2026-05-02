@@ -108,7 +108,6 @@ test("renderInstructionTemplate uses full language names", () => {
   const template = "{{RESPONSE_LANGUAGE}}";
   assert.match(renderInstructionTemplate(template, { responseLanguage: "zh" }), /respond in Chinese/);
   assert.match(renderInstructionTemplate(template, { responseLanguage: "en" }), /respond in English/);
-  assert.match(renderInstructionTemplate(template, { responseLanguage: "ja" }), /respond in Japanese/);
   assert.equal(renderInstructionTemplate(template, { responseLanguage: "auto" }).trim(), "");
 });
 

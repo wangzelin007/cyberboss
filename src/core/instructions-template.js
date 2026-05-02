@@ -12,7 +12,6 @@ function resolveUserPronoun(gender) {
 const LANGUAGE_DISPLAY_NAMES = {
   en: "English",
   zh: "Chinese",
-  ja: "Japanese",
 };
 
 function buildResponseLanguageInstruction(language) {
