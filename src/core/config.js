@@ -1,3 +1,4 @@
+const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
@@ -5,6 +6,8 @@ function readConfig() {
   const argv = process.argv.slice(2);
   const mode = argv[0] || "";
   const stateDir = process.env.CYBERBOSS_STATE_DIR || path.join(os.homedir(), ".cyberboss");
+
+  const timezoneConfigFile = path.join(stateDir, "timezone-config.json");
 
   return {
     mode,
@@ -74,6 +77,8 @@ function readConfig() {
     copilotModel: readTextEnv("CYBERBOSS_COPILOT_MODEL"),
     sessionsFile: path.join(stateDir, "sessions.json"),
     startWithCheckin: (mode === "start" && hasArgFlag(argv, "--checkin")) || readBoolEnv("CYBERBOSS_ENABLE_CHECKIN"),
+    timezoneConfigFile,
+    timezone: validateTimezone(readTextEnv("CYBERBOSS_TIMEZONE")) || loadPersistedTimezone(timezoneConfigFile) || Intl.DateTimeFormat().resolvedOptions().timeZone,
   };
 }
 
@@ -163,6 +168,31 @@ function resolveLocationServerEnabled({ mode, enabled }) {
     return enabled;
   }
   return false;
+}
+
+function loadPersistedTimezone(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    const parsed = JSON.parse(raw);
+    const tz = typeof parsed?.timezone === "string" ? parsed.timezone.trim() : "";
+    if (tz) {
+      Intl.DateTimeFormat(undefined, { timeZone: tz });
+      return tz;
+    }
+  } catch {
+    // ignore: file missing, malformed, or invalid timezone
+  }
+  return "";
+}
+
+function validateTimezone(tz) {
+  if (!tz) return "";
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone: tz });
+    return tz;
+  } catch {
+    return "";
+  }
 }
 
 module.exports = { readConfig };

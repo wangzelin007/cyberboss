@@ -15,8 +15,8 @@ class DiaryService {
     }
 
     const now = new Date();
-    const dateString = date || formatDate(now);
-    const timeString = time || formatTime(now);
+    const dateString = date || formatDate(now, this.config.timezone);
+    const timeString = time || formatTime(now, this.config.timezone);
     const filePath = path.join(this.config.diaryDir, `${dateString}.md`);
     const entry = buildDiaryEntry({
       timeString,
@@ -41,18 +41,18 @@ function buildDiaryEntry({ timeString, title, body }) {
   return `${heading}\n\n${body}`;
 }
 
-function formatDate(date) {
+function formatDate(date, timezone) {
   return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Shanghai",
+    timeZone: timezone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
   }).format(date);
 }
 
-function formatTime(date) {
+function formatTime(date, timezone) {
   return new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Shanghai",
+    timeZone: timezone,
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
