@@ -56,6 +56,7 @@ test("handleTimezoneCommand switches to a valid timezone", async () => {
     channelAdapter: {
       async sendText(payload) { sent.push(payload); },
     },
+    applyTimezone: CyberbossApp.prototype.applyTimezone,
   };
 
   await CyberbossApp.prototype.handleTimezoneCommand.call(appLike, {
@@ -69,7 +70,28 @@ test("handleTimezoneCommand switches to a valid timezone", async () => {
   assert.equal(loadTimezoneConfig(tzFile), "Australia/Sydney");
 });
 
-test("handleTimezoneCommand rejects invalid timezone", async () => {
+test("handleTimezoneCommand fuzzy matches city name", async () => {
+  const sent = [];
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-tz-test-"));
+  const tzFile = path.join(dir, "timezone-config.json");
+  const appLike = {
+    config: { timezone: "Asia/Shanghai", timezoneConfigFile: tzFile },
+    channelAdapter: {
+      async sendText(payload) { sent.push(payload); },
+    },
+    applyTimezone: CyberbossApp.prototype.applyTimezone,
+  };
+
+  await CyberbossApp.prototype.handleTimezoneCommand.call(appLike, {
+    senderId: "user-1",
+    contextToken: "ctx-1",
+  }, { args: "sydney" });
+
+  assert.equal(appLike.config.timezone, "Australia/Sydney");
+  assert.match(sent[0].text, /Australia\/Sydney/);
+});
+
+test("handleTimezoneCommand lists multiple matches", async () => {
   const sent = [];
   const appLike = {
     config: { timezone: "Asia/Shanghai" },
@@ -81,9 +103,26 @@ test("handleTimezoneCommand rejects invalid timezone", async () => {
   await CyberbossApp.prototype.handleTimezoneCommand.call(appLike, {
     senderId: "user-1",
     contextToken: "ctx-1",
-  }, { args: "Fake/Zone" });
+  }, { args: "america" });
 
   assert.equal(appLike.config.timezone, "Asia/Shanghai");
-  assert.equal(sent.length, 1);
-  assert.match(sent[0].text, /Invalid timezone/);
+  assert.match(sent[0].text, /Found \d+ matches/);
+});
+
+test("handleTimezoneCommand shows error for no matches", async () => {
+  const sent = [];
+  const appLike = {
+    config: { timezone: "Asia/Shanghai" },
+    channelAdapter: {
+      async sendText(payload) { sent.push(payload); },
+    },
+  };
+
+  await CyberbossApp.prototype.handleTimezoneCommand.call(appLike, {
+    senderId: "user-1",
+    contextToken: "ctx-1",
+  }, { args: "xyznonexistent" });
+
+  assert.equal(appLike.config.timezone, "Asia/Shanghai");
+  assert.match(sent[0].text, /No timezone found/);
 });

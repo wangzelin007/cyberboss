@@ -1516,35 +1516,52 @@ class CyberbossApp {
     if (!arg) {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: `🌍 Current timezone: ${this.config.timezone}\nUsage: /tz <IANA timezone> (e.g. /tz Australia/Sydney)`,
+        text: `🌍 Current timezone: ${this.config.timezone}\nUsage: /tz <timezone or city> (e.g. /tz sydney, /tz Asia/Shanghai)`,
         contextToken: normalized.contextToken,
       });
       return;
     }
-    try {
-      Intl.DateTimeFormat(undefined, { timeZone: arg });
-    } catch {
-      await this.channelAdapter.sendText({
-        userId: normalized.senderId,
-        text: `⚠️  Invalid timezone "${arg}". Use an IANA timezone name like Asia/Shanghai, Australia/Sydney, Europe/London.`,
-        contextToken: normalized.contextToken,
-      });
+    const resolved = resolveTimezoneInput(arg);
+    if (resolved.exact) {
+      await this.applyTimezone(normalized, resolved.exact);
       return;
     }
-    this.config.timezone = arg;
-    try {
-      saveTimezoneConfig(this.config.timezoneConfigFile, arg);
-    } catch {
+    if (resolved.matches.length === 1) {
+      await this.applyTimezone(normalized, resolved.matches[0]);
+      return;
+    }
+    if (resolved.matches.length > 1) {
+      const shown = resolved.matches.slice(0, 10);
+      const extra = resolved.matches.length > 10 ? `\n... and ${resolved.matches.length - 10} more` : "";
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: `⚠️  Timezone switched to ${arg} for this session, but failed to persist. It will revert on restart.`,
+        text: `🔍 Found ${resolved.matches.length} matches for "${arg}":\n${shown.join("\n")}${extra}\n\nSend /tz <full name> to confirm.`,
         contextToken: normalized.contextToken,
       });
       return;
     }
     await this.channelAdapter.sendText({
       userId: normalized.senderId,
-      text: `✅ Timezone switched to ${arg}`,
+      text: `⚠️  No timezone found for "${arg}". Try a city name like sydney, tokyo, london.`,
+      contextToken: normalized.contextToken,
+    });
+  }
+
+  async applyTimezone(normalized, timezone) {
+    this.config.timezone = timezone;
+    try {
+      saveTimezoneConfig(this.config.timezoneConfigFile, timezone);
+    } catch {
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: `⚠️  Timezone switched to ${timezone} for this session, but failed to persist.`,
+        contextToken: normalized.contextToken,
+      });
+      return;
+    }
+    await this.channelAdapter.sendText({
+      userId: normalized.senderId,
+      text: `✅ Timezone switched to ${timezone}`,
       contextToken: normalized.contextToken,
     });
   }
@@ -2733,4 +2750,24 @@ function loadTimezoneConfig(filePath) {
 function saveTimezoneConfig(filePath, timezone) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, JSON.stringify({ timezone }, null, 2));
+}
+
+function resolveTimezoneInput(input) {
+  const trimmed = (input || "").trim();
+  if (!trimmed) {
+    return { exact: "", matches: [] };
+  }
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone: trimmed });
+    return { exact: trimmed, matches: [] };
+  } catch {
+    // not an exact IANA name, try fuzzy search
+  }
+  const query = trimmed.toLowerCase().replace(/[\s_-]+/g, " ");
+  const allZones = Intl.supportedValuesOf("timeZone");
+  const matches = allZones.filter((z) => {
+    const normalized = z.toLowerCase().replace(/[_/]/g, " ");
+    return normalized.includes(query);
+  });
+  return { exact: "", matches };
 }
