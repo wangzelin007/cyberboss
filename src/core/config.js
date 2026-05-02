@@ -79,6 +79,8 @@ function readConfig() {
     startWithCheckin: (mode === "start" && hasArgFlag(argv, "--checkin")) || readBoolEnv("CYBERBOSS_ENABLE_CHECKIN"),
     timezoneConfigFile,
     timezone: validateTimezone(readTextEnv("CYBERBOSS_TIMEZONE")) || loadPersistedTimezone(timezoneConfigFile) || Intl.DateTimeFormat().resolvedOptions().timeZone,
+    responseLanguage: readTextEnv("CYBERBOSS_RESPONSE_LANGUAGE") || loadPersistedLanguage(path.join(stateDir, "language-config.json")) || "auto",
+    languageConfigFile: path.join(stateDir, "language-config.json"),
   };
 }
 
@@ -190,6 +192,17 @@ function validateTimezone(tz) {
   try {
     Intl.DateTimeFormat(undefined, { timeZone: tz });
     return tz;
+  } catch {
+    return "";
+  }
+}
+
+function loadPersistedLanguage(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    const parsed = JSON.parse(raw);
+    const lang = typeof parsed?.language === "string" ? parsed.language.trim() : "";
+    return lang || "";
   } catch {
     return "";
   }

@@ -1125,6 +1125,9 @@ class CyberbossApp {
       case "tz":
         await this.handleTimezoneCommand(normalized, command);
         return;
+      case "lang":
+        await this.handleLanguageCommand(normalized, command);
+        return;
       case "yes":
       case "always":
       case "no":
@@ -1562,6 +1565,45 @@ class CyberbossApp {
     await this.channelAdapter.sendText({
       userId: normalized.senderId,
       text: `✅ Timezone switched to ${timezone}`,
+      contextToken: normalized.contextToken,
+    });
+  }
+
+  async handleLanguageCommand(normalized, command) {
+    const arg = normalizeCommandArgument(command.args).toLowerCase();
+    if (!arg) {
+      const current = this.config.responseLanguage || "auto";
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: `🌐 Current response language: ${current}\nUsage: /lang <language>\n\n  auto — 自动/Auto\n  en — 英语/English\n  zh — 中文/Chinese`,
+        contextToken: normalized.contextToken,
+      });
+      return;
+    }
+    const ALLOWED_LANGUAGES = ["auto", "en", "zh"];
+    if (!ALLOWED_LANGUAGES.includes(arg)) {
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: `⚠️  Unsupported language "${arg}".\n\nSupported:\n  auto — 自动/Auto\n  en — 英语/English\n  zh — 中文/Chinese`,
+        contextToken: normalized.contextToken,
+      });
+      return;
+    }
+    try {
+      saveLanguageConfig(this.config.languageConfigFile, arg);
+    } catch {
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: `⚠️  Failed to save language setting. Please check disk permissions and try again.`,
+        contextToken: normalized.contextToken,
+      });
+      return;
+    }
+    this.config.responseLanguage = arg;
+    const label = arg === "auto" ? "auto (follow user's language)" : arg;
+    await this.channelAdapter.sendText({
+      userId: normalized.senderId,
+      text: `✅ Response language set to: ${label}\nSend /reread to apply to current thread.`,
       contextToken: normalized.contextToken,
     });
   }
@@ -2103,7 +2145,23 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-module.exports = { CyberbossApp, loadTimezoneConfig, saveTimezoneConfig };
+module.exports = { CyberbossApp, loadTimezoneConfig, saveTimezoneConfig, loadLanguageConfig, saveLanguageConfig };
+
+function loadLanguageConfig(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    const parsed = JSON.parse(raw);
+    const lang = typeof parsed?.language === "string" ? parsed.language.trim() : "";
+    return lang || "";
+  } catch {
+    return "";
+  }
+}
+
+function saveLanguageConfig(filePath, language) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify({ language }, null, 2));
+}
 
 function parseChannelCommand(text) {
   const normalized = typeof text === "string" ? text.trim() : "";
