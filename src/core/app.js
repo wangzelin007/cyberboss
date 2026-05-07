@@ -1051,9 +1051,19 @@ class CyberbossApp {
 
     for (const reminder of dueReminders) {
       const nowIso = new Date().toISOString();
+      // Deterministic per-occurrence id. For temp this is stable across retries
+      // (dueAtMs never changes once set); for recurring the id rolls forward
+      // naturally after each successful advance. Combined with the hasMessageId
+      // guard below, this makes the enqueue step idempotent under crash/retry.
+      const occurrenceKey = `reminder:${reminder.id}:${reminder.dueAtMs}`;
+      if (this.systemMessageQueue.hasMessageId(occurrenceKey)) {
+        // Already queued from a previous loop iteration whose update() never
+        // landed; let the existing message drain instead of duplicating it.
+        continue;
+      }
       try {
         this.systemMessageQueue.enqueue({
-          id: `reminder:${reminder.id}:${Date.now()}`,
+          id: occurrenceKey,
           accountId: reminder.accountId,
           senderId: reminder.senderId,
           workspaceRoot: this.resolveReminderWorkspaceRoot(reminder),
@@ -1076,7 +1086,8 @@ class CyberbossApp {
           this.reminderQueue.update(reminder.id, { lastFiredAt: nowIso });
         }
       } catch {
-        // Best-effort. Worst case the reminder fires again on the next loop.
+        // Best-effort. Worst case the reminder fires again on the next loop, in
+        // which case the hasMessageId check above will skip the duplicate enqueue.
       }
     }
   }

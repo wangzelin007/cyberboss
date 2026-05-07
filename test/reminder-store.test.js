@@ -200,3 +200,167 @@ test("ReminderDoneStore.archive rejects invalid closeReason and normalises close
   const out = store.archive(entry, { closeReason: "ack", closedBy: "hacker" });
   assert.equal(out.closedBy, "ai", "unknown closedBy falls back to 'ai' default");
 });
+
+const { parsePeriod } = require("../src/services/reminder-service");
+
+test("parsePeriod accepts m/h/d/w but rejects seconds (no silent up-conversion)", () => {
+  assert.equal(parsePeriod("1h"), 3_600_000);
+  assert.equal(parsePeriod("30m"), 1_800_000);
+  assert.equal(parsePeriod("2d"), 2 * 86_400_000);
+  assert.equal(parsePeriod("1w"), 7 * 86_400_000);
+  // Seconds were previously silently treated as minutes; now they should
+  // return 0 so the caller's validation surfaces a clear error.
+  assert.equal(parsePeriod("30s"), 0);
+  assert.equal(parsePeriod("1s"), 0);
+  assert.equal(parsePeriod(""), 0);
+  assert.equal(parsePeriod("garbage"), 0);
+});
+
+test("normalizeReminder rejects activeHours with zero-width range", () => {
+  const filePath = tmpFile();
+  const store = new ReminderQueueStore({ filePath });
+  // 00:00-00:00 is ambiguous (always vs never). Reject by dropping the field
+  // — users who want 24h coverage just omit activeHours entirely.
+  const entry = store.enqueue(buildBaseFields({
+    id: "rec-zero-window",
+    kind: "recurring",
+    periodMs: 3_600_000,
+    activeHours: "00:00-00:00",
+  }));
+  assert.equal(entry.activeHours, undefined);
+
+  // Sanity: a non-zero range still works.
+  const ok = store.enqueue(buildBaseFields({
+    id: "rec-good-window",
+    kind: "recurring",
+    periodMs: 3_600_000,
+    activeHours: "09:00-18:00",
+  }));
+  assert.equal(ok.activeHours, "09:00-18:00");
+});
+
+const { ReminderService } = require("../src/services/reminder-service");
+
+function buildServiceFixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-reminder-svc-"));
+  const accountsDir = path.join(root, "accounts");
+  const accountId = "acct-test";
+  const senderId = "user-test";
+  fs.mkdirSync(accountsDir, { recursive: true });
+  fs.writeFileSync(path.join(accountsDir, `${accountId}.json`), JSON.stringify({
+    accountId, token: "tok-account", savedAt: new Date().toISOString(),
+  }));
+  fs.writeFileSync(path.join(accountsDir, `${accountId}.context-tokens.json`), JSON.stringify({
+    [senderId]: "tok-context",
+  }));
+  const config = {
+    accountId,
+    accountsDir,
+    reminderQueueFile: path.join(root, "reminder-queue.json"),
+    reminderDoneFile: path.join(root, "reminder-done.json"),
+  };
+  return { config, accountId, senderId, root };
+}
+
+test("acknowledge is a no-op for recurring reminders (returns recurring_noop)", () => {
+  const { config, accountId, senderId } = buildServiceFixture();
+  const service = new ReminderService({ config, sessionStore: null });
+  // Bypass create() (which checks dueAtMs > now); enqueue directly into the
+  // store with the same shape create() would produce.
+  service.queue.enqueue({
+    id: "rec-must-not-ack",
+    accountId,
+    senderId,
+    contextToken: "tok-context",
+    text: "stretch",
+    dueAtMs: Date.now() + 60_000,
+    createdAt: new Date().toISOString(),
+    kind: "recurring",
+    periodMs: 3_600_000,
+  });
+
+  const result = service.acknowledge({ id: "rec-must-not-ack" }, { senderId });
+  assert.equal(result.removed, false);
+  assert.equal(result.reason, "recurring_noop");
+  assert.equal(result.kind, "recurring");
+  // Must still be in the active queue.
+  service.queue.load();
+  assert.equal(service.queue.state.reminders.length, 1);
+  // And must NOT have been archived to done.
+  service.done.load();
+  assert.equal(service.done.state.reminders.length, 0);
+});
+
+test("delete removes recurring reminders and archives them with closeReason=delete", () => {
+  const { config, accountId, senderId } = buildServiceFixture();
+  const service = new ReminderService({ config, sessionStore: null });
+  service.queue.enqueue({
+    id: "rec-cancel",
+    accountId,
+    senderId,
+    contextToken: "tok-context",
+    text: "stretch",
+    dueAtMs: Date.now() + 60_000,
+    createdAt: new Date().toISOString(),
+    kind: "recurring",
+    periodMs: 3_600_000,
+  });
+
+  const result = service.delete({ id: "rec-cancel", closedBy: "user" }, { senderId });
+  assert.equal(result.removed, true);
+  assert.equal(result.archived, true);
+
+  service.queue.load();
+  assert.equal(service.queue.state.reminders.length, 0);
+  service.done.load();
+  assert.equal(service.done.state.reminders.length, 1);
+  assert.equal(service.done.state.reminders[0].closeReason, "delete");
+  assert.equal(service.done.state.reminders[0].closedBy, "user");
+});
+
+test("acknowledge removes temp and archives with closeReason=ack", () => {
+  const { config, accountId, senderId } = buildServiceFixture();
+  const service = new ReminderService({ config, sessionStore: null });
+  service.queue.enqueue({
+    id: "temp-done",
+    accountId,
+    senderId,
+    contextToken: "tok-context",
+    text: "send invoice",
+    dueAtMs: Date.now() + 60_000,
+    createdAt: new Date().toISOString(),
+    kind: "temp",
+    lastFiredAt: new Date(Date.now() - 3600_000).toISOString(),
+  });
+
+  const result = service.acknowledge({ id: "temp-done" }, { senderId });
+  assert.equal(result.removed, true);
+  assert.equal(result.archived, true);
+
+  service.done.load();
+  assert.equal(service.done.state.reminders.length, 1);
+  assert.equal(service.done.state.reminders[0].closeReason, "ack");
+});
+
+const { SystemMessageQueueStore } = require("../src/core/system-message-queue-store");
+
+test("SystemMessageQueueStore.hasMessageId enables idempotent reminder enqueue", () => {
+  const filePath = tmpFile();
+  const store = new SystemMessageQueueStore({ filePath });
+  assert.equal(store.hasMessageId("reminder:abc:123"), false);
+
+  store.enqueue({
+    id: "reminder:abc:123",
+    accountId: "acct-1",
+    senderId: "user-1",
+    workspaceRoot: "/tmp/work",
+    text: "due reminder",
+    createdAt: new Date().toISOString(),
+  });
+  assert.equal(store.hasMessageId("reminder:abc:123"), true);
+  // The retry path in flushDueReminders relies on this guard so a successful
+  // enqueue followed by a failed update() does not produce duplicate messages
+  // in the queue on the next loop iteration.
+  assert.equal(store.hasMessageId(""), false);
+  assert.equal(store.hasMessageId("not-there"), false);
+});

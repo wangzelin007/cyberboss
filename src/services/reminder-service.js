@@ -142,6 +142,18 @@ class ReminderService {
     if (senderId && entry.senderId !== senderId) {
       throw new Error("Reminder belongs to a different WeChat user.");
     }
+    if (action === "ack" && entry.kind === REMINDER_KIND_RECURRING) {
+      // Ack is intentionally a no-op for recurring reminders: they have no
+      // "completed" state, only "cancelled". The AI should call delete instead.
+      return {
+        id: trimmedId,
+        action,
+        removed: false,
+        reason: "recurring_noop",
+        kind: entry.kind,
+        text: entry.text,
+      };
+    }
     const removed = this.queue.remove(trimmedId);
     let archived = null;
     if (removed) {
@@ -220,11 +232,13 @@ function parsePeriod(rawValue) {
   while (index < normalized.length) {
     while (index < normalized.length && /\s/.test(normalized[index])) index += 1;
     if (index >= normalized.length) break;
-    const match = normalized.slice(index).match(/^(\d+)\s*([smhdw])/);
+    // Accept m/h/d/w only. Seconds are intentionally rejected: a reminder
+    // period below MIN_PERIOD_MS (1 minute) is almost certainly a typo, and
+    // silently up-converting "30s" to a different unit was hiding bugs.
+    const match = normalized.slice(index).match(/^(\d+)\s*([mhdw])/);
     if (!match) return 0;
     const amount = Number.parseInt(match[1], 10);
-    const unit = match[2] === "s" ? "m" : match[2]; // treat "s" as nonsense and round up to minute floor
-    const unitMs = PERIOD_UNIT_MS[unit] || 0;
+    const unitMs = PERIOD_UNIT_MS[match[2]] || 0;
     if (!Number.isFinite(amount) || amount <= 0 || !unitMs) return 0;
     totalMs += amount * unitMs;
     index += match[0].length;

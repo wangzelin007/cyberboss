@@ -236,6 +236,12 @@ function normalizeActiveHours(value) {
   ) {
     return "";
   }
+  // Reject zero-width ranges. start==end is ambiguous (could mean "always" or
+  // "never"); accepting it would let computeNextRecurringDueAtMs spin against
+  // the safety cap. Users who want 24h coverage should simply omit activeHours.
+  if (startH === endH && startM === endM) {
+    return "";
+  }
   return `${pad2(startH)}:${pad2(startM)}-${pad2(endH)}:${pad2(endM)}`;
 }
 
