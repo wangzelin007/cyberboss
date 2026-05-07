@@ -25,6 +25,7 @@ const { SystemMessageDispatcher } = require("./system-message-dispatcher");
 const { TimelineScreenshotQueueStore } = require("./timeline-screenshot-queue-store");
 const { TurnGateStore } = require("./turn-gate-store");
 const { ReminderQueueStore } = require("../adapters/channel/weixin/reminder-queue-store");
+const { computeNextRecurringDueAtMs } = require("../services/reminder-schedule");
 const {
   matchesCommandPrefix,
   canonicalizeCommandTokens,
@@ -1049,20 +1050,33 @@ class CyberbossApp {
       .filter((reminder) => reminder.accountId === account.accountId);
 
     for (const reminder of dueReminders) {
+      const nowIso = new Date().toISOString();
       try {
         this.systemMessageQueue.enqueue({
-          id: `reminder:${reminder.id}`,
+          id: `reminder:${reminder.id}:${Date.now()}`,
           accountId: reminder.accountId,
           senderId: reminder.senderId,
           workspaceRoot: this.resolveReminderWorkspaceRoot(reminder),
           text: buildReminderSystemTrigger(reminder, this.config),
-          createdAt: new Date().toISOString(),
+          createdAt: nowIso,
         });
       } catch {
-        this.reminderQueue.enqueue({
-          ...reminder,
-          dueAtMs: Date.now() + 5_000,
-        });
+        // Leave the reminder untouched so the next loop retries it. Without this,
+        // a transient enqueue failure would silently drop the fire.
+        continue;
+      }
+      try {
+        if (reminder.kind === "recurring") {
+          const nextDueAtMs = computeNextRecurringDueAtMs(reminder, Date.now(), this.config?.timezone);
+          this.reminderQueue.update(reminder.id, { dueAtMs: nextDueAtMs, lastFiredAt: nowIso });
+        } else {
+          // Temp: persist in queue until ack/delete. Mark lastFiredAt so listDue
+          // does not re-fire it from the due-time loop, and so the random
+          // check-in trigger can compute "pending Xh".
+          this.reminderQueue.update(reminder.id, { lastFiredAt: nowIso });
+        }
+      } catch {
+        // Best-effort. Worst case the reminder fires again on the next loop.
       }
     }
   }
@@ -2448,7 +2462,18 @@ function buildElicitationApprovalPromptText(approval) {
 function buildReminderSystemTrigger(reminder, config = {}) {
   const reminderText = String(reminder?.text || "").trim();
   const userName = String(config?.userName || "").trim() || "the user";
-  return `Due reminder for ${userName}: ${reminderText}`;
+  const id = String(reminder?.id || "").trim();
+  const kind = reminder?.kind === "recurring" ? "recurring" : "temp";
+  const lines = [`Due reminder for ${userName}: ${reminderText}`];
+  if (id) {
+    lines.push(`reminder_id=${id} kind=${kind}`);
+    if (kind === "temp") {
+      lines.push("Temp reminders persist until acknowledged. When the user confirms the task is actually done, call cyberboss_reminder_ack({id}). When the user explicitly cancels it, call cyberboss_reminder_delete({id}). If the user only acknowledges hearing the reminder without finishing it, do NOT ack — it will resurface during the next check-in.");
+    } else {
+      lines.push("Recurring reminders re-fire on schedule. Only call cyberboss_reminder_delete({id}) when the user explicitly cancels the routine.");
+    }
+  }
+  return lines.join("\n");
 }
 
 function buildScopeKey(bindingKey, workspaceRoot) {

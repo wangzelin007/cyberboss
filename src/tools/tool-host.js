@@ -94,24 +94,73 @@ const PROJECT_TOOLS = [
   },
   {
     name: "cyberboss_reminder_create",
-    description: "Create a reminder in Cyberboss.",
-    shortHint: "Create a reminder with direct text plus delayMinutes or dueAt.",
+    description: "Create a reminder in Cyberboss. Use kind='temp' for one-off events that must be acknowledged when done; use kind='recurring' for repeating routines (drink water hourly, daily standup) that loop until explicitly deleted.",
+    shortHint: "Create a temp or recurring reminder.",
     topics: ["reminder"],
     inputSchema: {
       type: "object",
       required: ["text"],
       properties: {
         text: { type: "string", description: "Reminder text to send back later." },
-        delayMinutes: { type: "integer", description: "Minutes from now before the reminder fires." },
-        dueAt: { type: "string", description: "Absolute time such as 2026-04-07T21:30+08:00." },
+        delayMinutes: { type: "integer", description: "Minutes from now before the first fire." },
+        dueAt: { type: "string", description: "Absolute first-fire time, e.g. 2026-04-07T21:30+08:00." },
         userId: { type: "string", description: "Optional explicit WeChat user id." },
+        kind: { type: "string", enum: ["temp", "recurring"], description: "temp (default) requires ack to clear; recurring loops on periodMs until deleted." },
+        period: { type: "string", description: "Recurring period shorthand, e.g. '1h', '30m', '1d', '1w'. Required when kind='recurring' unless periodMs is provided." },
+        periodMs: { type: "integer", description: "Recurring period in milliseconds (alternative to period)." },
+        activeHours: { type: "string", description: "Recurring only. Local active window 'HH:mm-HH:mm'; fires outside this window skip to the next valid slot." },
+        activeWeekdays: { type: "array", items: { type: "integer", minimum: 0, maximum: 6 }, description: "Recurring only. Allowed weekdays (0=Sunday..6=Saturday); e.g. [1,2,3,4,5] for weekdays only." },
       },
       additionalProperties: false,
     },
     async handler({ services, args, context }) {
       const result = await services.reminder.create(args, context);
       return {
-        text: `Reminder queued: ${result.id}`,
+        text: `Reminder queued: ${result.id} (${result.kind})`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "cyberboss_reminder_ack",
+    description: "Acknowledge a temp reminder once the user has actually completed or settled the task. Idempotent — calling with an unknown id is treated as success. Do NOT ack just because the user replied; only ack on clear completion ('做完了', '已发送', 'done').",
+    shortHint: "Mark a temp reminder as completed and remove it from the queue.",
+    topics: ["reminder"],
+    inputSchema: {
+      type: "object",
+      required: ["id"],
+      properties: {
+        id: { type: "string", description: "The reminder id (uuid) to acknowledge." },
+        userId: { type: "string", description: "Optional explicit WeChat user id." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = services.reminder.acknowledge(args, context);
+      return {
+        text: result.removed ? `Reminder acked: ${result.id}` : `Reminder ack ignored (not found): ${result.id}`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "cyberboss_reminder_delete",
+    description: "Delete any reminder permanently. Use this when the user explicitly cancels a recurring routine ('别再提醒喝水了') or wants to drop a temp reminder without completing it. Idempotent.",
+    shortHint: "Delete any reminder (temp or recurring) from the queue.",
+    topics: ["reminder"],
+    inputSchema: {
+      type: "object",
+      required: ["id"],
+      properties: {
+        id: { type: "string", description: "The reminder id (uuid) to delete." },
+        userId: { type: "string", description: "Optional explicit WeChat user id." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = services.reminder.delete(args, context);
+      return {
+        text: result.removed ? `Reminder deleted: ${result.id}` : `Reminder delete ignored (not found): ${result.id}`,
         data: result,
       };
     },
