@@ -123,8 +123,8 @@ const PROJECT_TOOLS = [
   },
   {
     name: "cyberboss_reminder_ack",
-    description: "Acknowledge a temp reminder once the user has actually completed or settled the task. Idempotent — calling with an unknown id is treated as success. Do NOT ack just because the user replied; only ack on clear completion ('做完了', '已发送', 'done').",
-    shortHint: "Mark a temp reminder as completed and remove it from the queue.",
+    description: "Acknowledge a temp reminder once the user has actually completed or settled the task. Idempotent — calling with an unknown id is treated as success. Do NOT ack just because the user replied; only ack on clear completion ('做完了', '已发送', 'done'). The closed entry is archived to reminder-done.json with closedBy='ai' by default; pass closedBy='dream' when the nightly dream review acks an item, or 'user' if the closure is being recorded on behalf of an explicit user instruction.",
+    shortHint: "Mark a temp reminder as completed and archive it.",
     topics: ["reminder"],
     inputSchema: {
       type: "object",
@@ -132,6 +132,7 @@ const PROJECT_TOOLS = [
       properties: {
         id: { type: "string", description: "The reminder id (uuid) to acknowledge." },
         userId: { type: "string", description: "Optional explicit WeChat user id." },
+        closedBy: { type: "string", enum: ["user", "ai", "ai-checkin", "dream", "manual"], description: "Who is closing the reminder. Defaults to 'ai'." },
       },
       additionalProperties: false,
     },
@@ -145,8 +146,8 @@ const PROJECT_TOOLS = [
   },
   {
     name: "cyberboss_reminder_delete",
-    description: "Delete any reminder permanently. Use this when the user explicitly cancels a recurring routine ('别再提醒喝水了') or wants to drop a temp reminder without completing it. Idempotent.",
-    shortHint: "Delete any reminder (temp or recurring) from the queue.",
+    description: "Delete any reminder permanently. Use this when the user explicitly cancels a recurring routine ('别再提醒喝水了') or wants to drop a temp reminder without completing it. Idempotent. Archived to reminder-done.json with closedBy='ai' by default; pass closedBy='dream' from the nightly review.",
+    shortHint: "Delete any reminder (temp or recurring) and archive it.",
     topics: ["reminder"],
     inputSchema: {
       type: "object",
@@ -154,6 +155,7 @@ const PROJECT_TOOLS = [
       properties: {
         id: { type: "string", description: "The reminder id (uuid) to delete." },
         userId: { type: "string", description: "Optional explicit WeChat user id." },
+        closedBy: { type: "string", enum: ["user", "ai", "ai-checkin", "dream", "manual"], description: "Who is closing the reminder. Defaults to 'ai'." },
       },
       additionalProperties: false,
     },

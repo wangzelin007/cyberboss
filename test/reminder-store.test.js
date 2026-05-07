@@ -161,3 +161,42 @@ test("normalizeReminder defaults invalid activeHours to empty string (not stored
   }));
   assert.equal(entry.activeHours, undefined);
 });
+
+const { ReminderDoneStore } = require("../src/adapters/channel/weixin/reminder-done-store");
+
+test("ReminderDoneStore.archive appends with closure metadata", () => {
+  const filePath = tmpFile();
+  const store = new ReminderDoneStore({ filePath });
+  const entry = {
+    id: "rem-1",
+    accountId: "acct-1",
+    senderId: "user-1",
+    text: "buy milk",
+    kind: "temp",
+    dueAtMs: 123,
+    createdAt: "2026-05-08T07:00:00.000Z",
+    lastFiredAt: "2026-05-08T07:30:00.000Z",
+  };
+  const archived = store.archive(entry, { closeReason: "ack", closedBy: "user", closedAt: "2026-05-08T08:00:00.000Z" });
+  assert.equal(archived.closeReason, "ack");
+  assert.equal(archived.closedBy, "user");
+  assert.equal(archived.closedAt, "2026-05-08T08:00:00.000Z");
+  assert.equal(archived.text, "buy milk");
+
+  // Roundtrip on disk and listClosedSince filter
+  const reloaded = new ReminderDoneStore({ filePath });
+  assert.equal(reloaded.state.reminders.length, 1);
+  const recent = reloaded.listClosedSince(Date.parse("2026-05-08T07:30:00.000Z"), { accountId: "acct-1" });
+  assert.equal(recent.length, 1);
+  const tooEarly = reloaded.listClosedSince(Date.parse("2026-05-08T09:00:00.000Z"), { accountId: "acct-1" });
+  assert.equal(tooEarly.length, 0);
+});
+
+test("ReminderDoneStore.archive rejects invalid closeReason and normalises closedBy", () => {
+  const filePath = tmpFile();
+  const store = new ReminderDoneStore({ filePath });
+  const entry = { id: "x", accountId: "a", senderId: "s", text: "t", kind: "temp", dueAtMs: 1, createdAt: "" };
+  assert.throws(() => store.archive(entry, { closeReason: "bogus" }), /invalid closeReason/);
+  const out = store.archive(entry, { closeReason: "ack", closedBy: "hacker" });
+  assert.equal(out.closedBy, "ai", "unknown closedBy falls back to 'ai' default");
+});

@@ -7,6 +7,7 @@ const {
   REMINDER_KIND_TEMP,
   REMINDER_KIND_RECURRING,
 } = require("../adapters/channel/weixin/reminder-queue-store");
+const { ReminderDoneStore } = require("../adapters/channel/weixin/reminder-done-store");
 const { resolvePreferredSenderId } = require("../core/default-targets");
 const { resolveBodyInput } = require("./text-input");
 
@@ -31,6 +32,7 @@ class ReminderService {
     this.config = config;
     this.sessionStore = sessionStore;
     this.queue = new ReminderQueueStore({ filePath: config.reminderQueueFile });
+    this.done = new ReminderDoneStore({ filePath: config.reminderDoneFile });
   }
 
   async create({
@@ -105,15 +107,15 @@ class ReminderService {
     return this.queue.enqueue(entry);
   }
 
-  acknowledge({ id = "", userId = "" } = {}, context = {}) {
-    return this.removeScoped(id, { explicitUser: userId, context, action: "ack" });
+  acknowledge({ id = "", userId = "", closedBy = "ai" } = {}, context = {}) {
+    return this.removeScoped(id, { explicitUser: userId, context, action: "ack", closedBy });
   }
 
-  delete({ id = "", userId = "" } = {}, context = {}) {
-    return this.removeScoped(id, { explicitUser: userId, context, action: "delete" });
+  delete({ id = "", userId = "", closedBy = "ai" } = {}, context = {}) {
+    return this.removeScoped(id, { explicitUser: userId, context, action: "delete", closedBy });
   }
 
-  removeScoped(id, { explicitUser = "", context = {}, action = "remove" } = {}) {
+  removeScoped(id, { explicitUser = "", context = {}, action = "remove", closedBy = "ai" } = {}) {
     const trimmedId = typeof id === "string" ? id.trim() : "";
     if (!trimmedId) {
       throw new Error("Reminder id is required.");
@@ -141,10 +143,24 @@ class ReminderService {
       throw new Error("Reminder belongs to a different WeChat user.");
     }
     const removed = this.queue.remove(trimmedId);
+    let archived = null;
+    if (removed) {
+      try {
+        archived = this.done.archive(removed, {
+          closeReason: action === "ack" ? "ack" : "delete",
+          closedBy,
+        });
+      } catch {
+        // Archive failure must not roll back the removal — losing the active
+        // reminder is the worse outcome. Surface in return shape so the caller
+        // can log if needed.
+      }
+    }
     return {
       id: trimmedId,
       action,
       removed: Boolean(removed),
+      archived: Boolean(archived),
       kind: entry.kind,
       text: entry.text,
     };
