@@ -94,24 +94,104 @@ const PROJECT_TOOLS = [
   },
   {
     name: "cyberboss_reminder_create",
-    description: "Create a reminder in Cyberboss.",
-    shortHint: "Create a reminder with direct text plus delayMinutes or dueAt.",
+    description: "Create a reminder in Cyberboss. Use kind='temp' for one-off events that must be acknowledged when done; use kind='recurring' for repeating routines (drink water hourly, daily standup) that loop until explicitly deleted.",
+    shortHint: "Create a temp or recurring reminder.",
     topics: ["reminder"],
     inputSchema: {
       type: "object",
       required: ["text"],
       properties: {
         text: { type: "string", description: "Reminder text to send back later." },
-        delayMinutes: { type: "integer", description: "Minutes from now before the reminder fires." },
-        dueAt: { type: "string", description: "Absolute time such as 2026-04-07T21:30+08:00." },
+        delayMinutes: { type: "integer", description: "Minutes from now before the first fire." },
+        dueAt: { type: "string", description: "Absolute first-fire time, e.g. 2026-04-07T21:30+08:00." },
         userId: { type: "string", description: "Optional explicit WeChat user id." },
+        kind: { type: "string", enum: ["temp", "recurring"], description: "temp (default) requires ack to clear; recurring loops on periodMs until deleted." },
+        period: { type: "string", description: "Recurring period shorthand, e.g. '1h', '30m', '1d', '1w'. Required when kind='recurring' unless periodMs is provided." },
+        periodMs: { type: "integer", description: "Recurring period in milliseconds (alternative to period)." },
+        activeHours: { type: "string", description: "Recurring only. Local active window 'HH:mm-HH:mm'; fires outside this window skip to the next valid slot." },
+        activeWeekdays: { type: "array", items: { type: "integer", minimum: 0, maximum: 6 }, description: "Recurring only. Allowed weekdays (0=Sunday..6=Saturday); e.g. [1,2,3,4,5] for weekdays only." },
       },
       additionalProperties: false,
     },
     async handler({ services, args, context }) {
       const result = await services.reminder.create(args, context);
       return {
-        text: `Reminder queued: ${result.id}`,
+        text: `Reminder queued: ${result.id} (${result.kind})`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "cyberboss_reminder_ack",
+    description: "Acknowledge a temp reminder once the user has actually completed or settled the task. Idempotent — calling with an unknown id is treated as success. Do NOT ack just because the user replied; only ack on clear completion ('做完了', '已发送', 'done'). The closed entry is archived to reminder-done.json with closedBy='ai' by default; pass closedBy='dream' when the nightly dream review acks an item, or 'user' if the closure is being recorded on behalf of an explicit user instruction.",
+    shortHint: "Mark a temp reminder as completed and archive it.",
+    topics: ["reminder"],
+    inputSchema: {
+      type: "object",
+      required: ["id"],
+      properties: {
+        id: { type: "string", description: "The reminder id (uuid) to acknowledge." },
+        userId: { type: "string", description: "Optional explicit WeChat user id." },
+        closedBy: { type: "string", enum: ["user", "ai", "ai-checkin", "dream", "manual"], description: "Who is closing the reminder. Defaults to 'ai'." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = services.reminder.acknowledge(args, context);
+      return {
+        text: result.removed ? `Reminder acked: ${result.id}` : `Reminder ack ignored (not found): ${result.id}`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "cyberboss_reminder_delete",
+    description: "Delete any reminder permanently. Use this when the user explicitly cancels a recurring routine ('别再提醒喝水了') or wants to drop a temp reminder without completing it. Idempotent. Archived to reminder-done.json with closedBy='ai' by default; pass closedBy='dream' from the nightly review.",
+    shortHint: "Delete any reminder (temp or recurring) and archive it.",
+    topics: ["reminder"],
+    inputSchema: {
+      type: "object",
+      required: ["id"],
+      properties: {
+        id: { type: "string", description: "The reminder id (uuid) to delete." },
+        userId: { type: "string", description: "Optional explicit WeChat user id." },
+        closedBy: { type: "string", enum: ["user", "ai", "ai-checkin", "dream", "manual"], description: "Who is closing the reminder. Defaults to 'ai'." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = services.reminder.delete(args, context);
+      return {
+        text: result.removed ? `Reminder deleted: ${result.id}` : `Reminder delete ignored (not found): ${result.id}`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "cyberboss_reminder_modify",
+    description: "Modify an existing reminder in place. ALWAYS prefer this over delete+create when the user wants to push a reminder back ('往后放', '推迟到明天'), rephrase the text, or adjust a recurring schedule — using create alone leaves the original entry as a duplicate. List first if you do not have the id. For temp reminders that have already fired and are awaiting ack, modifying dueAt also clears lastFiredAt so the reminder re-enters the due queue. Throws (does NOT silently no-op) if the id is unknown — never fall back to create on a not-found error.",
+    shortHint: "Push back / edit an existing reminder by id (no duplicate).",
+    topics: ["reminder"],
+    inputSchema: {
+      type: "object",
+      required: ["id"],
+      properties: {
+        id: { type: "string", description: "The reminder id (uuid) to modify. Get it via cyberboss_reminder_list." },
+        delayMinutes: { type: "integer", description: "Reschedule to N minutes from now. Mutually exclusive with dueAt." },
+        dueAt: { type: "string", description: "Reschedule to an absolute time, e.g. 2026-04-08T09:00+08:00. Mutually exclusive with delayMinutes." },
+        text: { type: "string", description: "New reminder text. Omit to keep the existing text." },
+        period: { type: "string", description: "Recurring only. New period shorthand, e.g. '2h', '1d'." },
+        periodMs: { type: "integer", description: "Recurring only. New period in milliseconds." },
+        activeHours: { type: "string", description: "Recurring only. New active window 'HH:mm-HH:mm', or empty string to clear." },
+        activeWeekdays: { type: "array", items: { type: "integer", minimum: 0, maximum: 6 }, description: "Recurring only. New allowed weekdays (0=Sunday..6=Saturday); empty array clears the constraint." },
+        userId: { type: "string", description: "Optional explicit WeChat user id." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.reminder.modify(args, context);
+      return {
+        text: `Reminder modified: ${result.id} (${result.changed.join(", ")})`,
         data: result,
       };
     },
