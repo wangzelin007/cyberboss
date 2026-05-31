@@ -139,6 +139,9 @@ Common optional variables:
 CYBERBOSS_RUNTIME=copilot
 CYBERBOSS_CODEX_ENDPOINT=ws://127.0.0.1:8765
 CYBERBOSS_CODEX_COMMAND=
+CYBERBOSS_CODEX_MODEL=
+CYBERBOSS_CODEX_MODEL_PROVIDER=
+CYBERBOSS_CODEX_NATIVE_IMAGE_INPUT=
 CYBERBOSS_CLAUDE_COMMAND=claude
 CYBERBOSS_CLAUDE_MODEL=
 CYBERBOSS_CLAUDE_CONTEXT_WINDOW=
@@ -146,6 +149,12 @@ CYBERBOSS_CLAUDE_PERMISSION_MODE=default
 CYBERBOSS_CLAUDE_DISABLE_VERBOSE=false
 CYBERBOSS_CLAUDE_EXTRA_ARGS=
 CLAUDE_CODE_MAX_OUTPUT_TOKENS=
+CYBERBOSS_VISION_MODE=auto
+CYBERBOSS_VISION_PROVIDER=openai-compatible
+CYBERBOSS_VISION_API_BASE_URL=
+CYBERBOSS_VISION_API_KEY=
+CYBERBOSS_VISION_MODEL=
+CYBERBOSS_VISION_TIMEOUT_MS=30000
 CYBERBOSS_ACCOUNT_ID=
 CYBERBOSS_WEIXIN_MIN_CHUNK_CHARS=20
 CYBERBOSS_WEIXIN_BASE_URL=https://ilinkai.weixin.qq.com
@@ -170,6 +179,12 @@ What these do:
   Reuse an existing shared Codex app-server instead of spawning a private runtime.
 - `CYBERBOSS_CODEX_COMMAND`
   Override the Codex launcher when `codex` is not directly on your `PATH`.
+- `CYBERBOSS_CODEX_MODEL`
+  Force Codex turns to use a specific model. Leave empty to use Codex's default model selection.
+- `CYBERBOSS_CODEX_MODEL_PROVIDER`
+  Force Codex turns to use a specific provider, such as `ollama` for local models. Leave empty for the default cloud provider.
+- `CYBERBOSS_CODEX_NATIVE_IMAGE_INPUT`
+  Optional override for direct image input through the Codex app-server path. Leave empty to infer from model metadata; set `true` to test a local multimodal model directly, or `false` to force caption fallback.
 - `CYBERBOSS_CLAUDE_COMMAND`
   Override the Claude launcher. Default is `claude`.
 - `CYBERBOSS_CLAUDE_MODEL`
@@ -184,6 +199,12 @@ What these do:
   Append extra Claude CLI arguments as a comma-separated list.
 - `CLAUDE_CODE_MAX_OUTPUT_TOKENS`
   Reserve output tokens for Claude replies. `/status` subtracts this reserve from the configured Claude context window.
+- `CYBERBOSS_VISION_MODE`
+  Choose how inbound images are handled: `auto`, `caption`, `native`, or `off`. `auto` uses native image input when a runtime supports it, otherwise falls back to captions.
+- `CYBERBOSS_VISION_PROVIDER`, `CYBERBOSS_VISION_API_BASE_URL`, `CYBERBOSS_VISION_API_KEY`, `CYBERBOSS_VISION_MODEL`
+  Configure the optional OpenAI-compatible vision caption API used for text-only models. For Qwen/DashScope, start from [templates/vision-openai-compatible.env](./templates/vision-openai-compatible.env).
+- `CYBERBOSS_VISION_TIMEOUT_MS`
+  Timeout for each image caption request.
 - `CYBERBOSS_WEIXIN_MIN_CHUNK_CHARS`
   Set the default minimum merge size for short WeChat reply chunks.
 - `CYBERBOSS_WEIXIN_BASE_URL`, `CYBERBOSS_WEIXIN_CDN_BASE_URL`, `CYBERBOSS_WEIXIN_QR_BOT_TYPE`
@@ -213,6 +234,29 @@ Why this matters:
 If you want the strongest "push" effect, do not immediately rewrite the persona template by hand. Let the agent develop its rhythm through real conversation first, then edit only the parts that are clearly wrong.
 
 If you plan to use shared mode, set `CYBERBOSS_WORKSPACE_ROOT` before the first start so `shared:open` resolves the right thread for the right project.
+
+If you use a local Codex provider such as Ollama, prefer a small wrapper script instead of putting provider flags directly into `CYBERBOSS_CODEX_COMMAND`. Copy [templates/codex-local-provider.sh](./templates/codex-local-provider.sh) to `${HOME}/.cyberboss/codex-local`, make it executable, and point Cyberboss at it:
+
+```bash
+cp ./templates/codex-local-provider.sh "${HOME}/.cyberboss/codex-local"
+chmod +x "${HOME}/.cyberboss/codex-local"
+```
+
+```dotenv
+CYBERBOSS_CODEX_COMMAND=/absolute/path/to/.cyberboss/codex-local
+CYBERBOSS_CODEX_MODEL_PROVIDER=ollama
+CYBERBOSS_CODEX_MODEL=gemma4:26b-32k
+```
+
+The template keeps cloud and local startup behavior in one command. When you switch back to the cloud provider, clear `CYBERBOSS_CODEX_MODEL_PROVIDER` and `CYBERBOSS_CODEX_MODEL`, then restart the shared bridge so the Codex app-server is launched with the new command environment.
+
+Local Codex models also need model metadata. If `CYBERBOSS_CODEX_MODEL` points at a model that is not in Codex's built-in catalog, add a model catalog file in your Codex home and reference it from `~/.codex/config.toml`:
+
+```toml
+model_catalog_json = "/absolute/path/to/.codex/local-models.json"
+```
+
+Build that file from your existing Codex model catalog and add entries for your local model slugs, including the correct `context_window`, `max_context_window`, `input_modalities`, and truncation policy. Keep the cloud model entries in the catalog. Verify with `codex debug models`; Codex should list the local model and should not warn that it is using fallback metadata.
 
 When `CYBERBOSS_RUNTIME=claudecode`, Cyberboss also upserts a workspace-local `.mcp.json` entry for `cyberboss_tools` before starting Claude, and launches Claude with that MCP config explicitly attached. That is how Claude discovers the Cyberboss project tools without any global registration.
 

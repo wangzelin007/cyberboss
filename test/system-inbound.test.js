@@ -22,7 +22,7 @@ test("system messages bypass normal inbound wrapping", async () => {
   });
 });
 
-test("image attachments inject view_image instructions for runtimes that support it", async () => {
+test("image attachments stay as inbound drafts before runtime turn assembly", async () => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-inbound-test-"));
   const originalFetch = global.fetch;
   global.fetch = async () => ({
@@ -66,22 +66,36 @@ test("image attachments inject view_image instructions for runtimes that support
       receivedAt: "2026-04-17T10:00:00.000Z",
     }, "/workspace");
 
-    assert.match(prepared.text, /Read every image first with `view_image`\./i);
-    assert.match(prepared.text, /Say nothing before reading/i);
-    assert.match(prepared.text, /cyberboss_sticker_save_from_inbox/i);
-    assert.match(prepared.text, /`items` array/i);
-    assert.match(prepared.text, /cyberboss_sticker_tags/i);
-    assert.match(prepared.text, /short new tag/i);
-    assert.match(prepared.text, /Do not describe save steps/i);
-    assert.doesNotMatch(prepared.text, /Do not use `Read` or shell commands on image files/i);
+    assert.equal(prepared.text, "");
+    assert.equal(prepared.originalText, "");
     assert.equal(prepared.attachments[0].contentType, "image/jpeg");
     assert.equal(prepared.attachments[0].isImage, true);
+
+    const runtimeTurn = await CyberbossApp.prototype.buildRuntimeTurn.call({
+      config: {
+        userName: "User",
+      },
+      runtimeAdapter: {
+        getTurnCapabilities() {
+          return { nativeImageInput: false };
+        },
+      },
+    }, { prepared, model: "" });
+    assert.match(runtimeTurn.text, /Saved attachments:/i);
+    assert.match(runtimeTurn.text, /vision caption provider is not configured/i);
+    assert.match(runtimeTurn.text, /cyberboss_sticker_save_from_inbox/i);
+    assert.match(runtimeTurn.text, /`items` array/i);
+    assert.match(runtimeTurn.text, /cyberboss_sticker_tags/i);
+    assert.match(runtimeTurn.text, /short new tag/i);
+    assert.match(runtimeTurn.text, /Do not describe save steps/i);
+    assert.doesNotMatch(runtimeTurn.text, /view_image/i);
+    assert.doesNotMatch(runtimeTurn.text, /Read every image first/i);
   } finally {
     global.fetch = originalFetch;
   }
 });
 
-test("image attachments tell claudecode to use Read on the saved local image file", async () => {
+test("image prompt assembly is runtime-neutral for claudecode drafts", async () => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-inbound-test-"));
   const originalFetch = global.fetch;
   global.fetch = async () => ({
@@ -125,21 +139,129 @@ test("image attachments tell claudecode to use Read on the saved local image fil
       receivedAt: "2026-04-17T10:00:00.000Z",
     }, "/workspace");
 
-    assert.match(prepared.text, /Read them before replying to User/i);
-    assert.match(prepared.text, /Read every image first with `Read`\./i);
-    assert.match(prepared.text, /Say nothing before reading/i);
-    assert.match(prepared.text, /cyberboss_sticker_save_from_inbox/i);
-    assert.match(prepared.text, /`items` array/i);
-    assert.match(prepared.text, /cyberboss_sticker_tags/i);
-    assert.match(prepared.text, /short new tag/i);
-    assert.match(prepared.text, /Do not describe save steps/i);
-    assert.doesNotMatch(prepared.text, /Do not use shell commands or wrappers/i);
-    assert.doesNotMatch(prepared.text, /view_image/i);
+    const runtimeTurn = await CyberbossApp.prototype.buildRuntimeTurn.call({
+      config: {
+        userName: "User",
+      },
+      runtimeAdapter: {
+        getTurnCapabilities() {
+          return { nativeImageInput: false };
+        },
+      },
+    }, { prepared, model: "" });
+
+    assert.match(runtimeTurn.text, /Saved attachments:/i);
+    assert.match(runtimeTurn.text, /cyberboss_sticker_save_from_inbox/i);
+    assert.match(runtimeTurn.text, /`items` array/i);
+    assert.match(runtimeTurn.text, /cyberboss_sticker_tags/i);
+    assert.match(runtimeTurn.text, /short new tag/i);
+    assert.match(runtimeTurn.text, /Do not describe save steps/i);
+    assert.doesNotMatch(runtimeTurn.text, /Read every image first/i);
+    assert.doesNotMatch(runtimeTurn.text, /view_image/i);
     assert.equal(prepared.attachments[0].contentType, "image/jpeg");
     assert.equal(prepared.attachments[0].isImage, true);
   } finally {
     global.fetch = originalFetch;
   }
+});
+
+test("text-only runtimes receive vision API captions as visual context", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-vision-test-"));
+  const imagePath = path.join(stateDir, "photo.jpg");
+  fs.writeFileSync(imagePath, Buffer.from("fake-jpeg-bytes"));
+  const originalFetch = global.fetch;
+  global.fetch = async (url, options) => {
+    assert.equal(String(url), "https://dashscope.example.com/compatible-mode/v1/chat/completions");
+    const body = JSON.parse(options.body);
+    assert.equal(body.model, "qwen-vl-demo");
+    assert.equal(body.messages[0].content[1].type, "image_url");
+    assert.match(body.messages[0].content[1].image_url.url, /^data:image\/jpeg;base64,/);
+    return {
+      ok: true,
+      async text() {
+        return JSON.stringify({
+          choices: [{
+            message: {
+              content: "一杯带拉花的咖啡放在桌上。",
+            },
+          }],
+        });
+      },
+    };
+  };
+
+  try {
+    const runtimeTurn = await CyberbossApp.prototype.buildRuntimeTurn.call({
+      config: {
+        visionMode: "auto",
+        visionProvider: "openai-compatible",
+        visionApiBaseUrl: "https://dashscope.example.com/compatible-mode/v1",
+        visionModel: "qwen-vl-demo",
+      },
+      runtimeAdapter: {
+        getTurnCapabilities() {
+          return { nativeImageInput: false };
+        },
+      },
+    }, {
+      prepared: {
+        provider: "weixin",
+        originalText: "",
+        text: "",
+        attachments: [{
+          kind: "image",
+          contentType: "image/jpeg",
+          isImage: true,
+          absolutePath: imagePath,
+        }],
+        attachmentFailures: [],
+        receivedAt: "2026-04-17T10:00:00.000Z",
+      },
+      model: "deepseek-chat",
+    });
+
+    assert.match(runtimeTurn.text, /Visual context from attachments:/i);
+    assert.match(runtimeTurn.text, /一杯带拉花的咖啡/);
+    assert.match(runtimeTurn.text, /cyberboss_sticker_save_from_inbox/i);
+    assert.deepEqual(runtimeTurn.attachments, []);
+    assert.equal(runtimeTurn.visionContext.route, "caption");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("native image-capable runtimes receive attachments without caption fallback", async () => {
+  const attachment = {
+    kind: "image",
+    contentType: "image/jpeg",
+    isImage: true,
+    absolutePath: "/tmp/native.jpg",
+  };
+  const runtimeTurn = await CyberbossApp.prototype.buildRuntimeTurn.call({
+    config: {
+      visionMode: "auto",
+    },
+    runtimeAdapter: {
+      getTurnCapabilities() {
+        return { nativeImageInput: true };
+      },
+    },
+  }, {
+    prepared: {
+      provider: "weixin",
+      originalText: "看看这个",
+      text: "看看这个",
+      attachments: [attachment],
+      attachmentFailures: [],
+      receivedAt: "2026-04-17T10:00:00.000Z",
+    },
+    model: "vision-model",
+  });
+
+  assert.match(runtimeTurn.text, /Saved attachments:/i);
+  assert.doesNotMatch(runtimeTurn.text, /Visual context from attachments:/i);
+  assert.deepEqual(runtimeTurn.attachments, [attachment]);
+  assert.equal(runtimeTurn.visionContext.route, "native");
 });
 
 test("image-only inbound turns enter the dedicated debounce queue", async () => {
@@ -283,7 +405,8 @@ test("debounced image batches merge with a trailing text message into one prepar
   assert.equal(routed.contextToken, "ctx-2");
   assert.match(routed.originalText, /这是补充文字/);
   assert.match(routed.text, /这是补充文字/);
-  assert.equal((routed.text.match(/Say nothing before reading/g) || []).length, 1);
+  assert.doesNotMatch(routed.text, /Saved attachments:/i);
+  assert.doesNotMatch(routed.text, /Read every image first/i);
 });
 
 test("debounced image batches still hand off to the normal pending buffer when the runtime is blocked", async () => {
@@ -342,7 +465,7 @@ test("debounced image batches still hand off to the normal pending buffer when t
   assert.equal(buffered[0].prepared.attachments.length, 1);
 });
 
-test("pending image-only inbox messages merge into one read prompt", () => {
+test("pending image-only inbox messages merge into one clean inbound draft", () => {
   const merged = CyberbossApp.prototype.mergePendingInboundDraft.call({
     config: {
       userName: "User",
@@ -392,10 +515,9 @@ test("pending image-only inbox messages merge into one read prompt", () => {
 
   assert.equal(merged.prepared.attachments.length, 2);
   assert.equal(merged.remainingMessages.length, 0);
-  assert.match(merged.prepared.text, /Saved attachments:/i);
-  assert.match(merged.prepared.text, /cyberboss_sticker_save_from_inbox/i);
-  assert.match(merged.prepared.text, /`items` array/i);
-  assert.equal((merged.prepared.text.match(/Say nothing before reading/g) || []).length, 1);
+  assert.equal(merged.prepared.text, "");
+  assert.doesNotMatch(merged.prepared.text, /Saved attachments:/i);
+  assert.doesNotMatch(merged.prepared.text, /Read every image first/i);
 });
 
 test("pending image-only inbox messages are split into batches of 10 attachments", () => {
