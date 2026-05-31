@@ -22,6 +22,7 @@ class ClaudeCodeProcessClient {
     this.activeThreadId = "";
     this.alive = false;
     this.sessionWaiters = new Set();
+    this.suppressNextCloseEvent = false;
   }
 
   onMessage(listener) {
@@ -44,6 +45,7 @@ class ClaudeCodeProcessClient {
 
   async connect(resumeSessionId = "") {
     if (this.child) return;
+    this.suppressNextCloseEvent = false;
     this.sessionId = "";
     this.resumeSessionId = isValidSessionId(resumeSessionId) ? resumeSessionId : "";
     this.activeThreadId = "";
@@ -103,6 +105,10 @@ class ClaudeCodeProcessClient {
       this.alive = false;
       this.child = null;
       this.stdin = null;
+      if (this.suppressNextCloseEvent) {
+        this.suppressNextCloseEvent = false;
+        return;
+      }
       this.emit({ type: "process.close", code, sessionId: this.activeThreadId || this.sessionId, turnId: this.pendingTurnId }, null);
     });
   }
@@ -119,13 +125,10 @@ class ClaudeCodeProcessClient {
     switch (eventType) {
       case "system":
         if (raw.session_id) {
-          if (isPendingThreadId(this.activeThreadId)) {
-            this.activeThreadId = raw.session_id;
+          const reportedSessionId = this.acceptReportedSessionId(raw.session_id, raw);
+          if (reportedSessionId) {
+            this.emit({ type: "session.id", sessionId: reportedSessionId }, raw);
           }
-          this.sessionId = raw.session_id;
-          this.resumeSessionId = "";
-          this.resolveSessionWaiters(raw.session_id);
-          this.emit({ type: "session.id", sessionId: raw.session_id }, raw);
         }
         break;
       case "assistant":
@@ -162,7 +165,7 @@ class ClaudeCodeProcessClient {
       const itemType = item.type;
       if (itemType === "text" && typeof item.text === "string" && item.text) {
         this.emit({
-          type: "reply.completed",
+          type: "assistant.text",
           text: item.text.trim(),
           turnId: this.pendingTurnId,
           sessionId: this.activeThreadId || this.sessionId,
@@ -209,8 +212,10 @@ class ClaudeCodeProcessClient {
 
   handleResult(raw) {
     if (raw.session_id) {
-      this.sessionId = raw.session_id;
-      this.resumeSessionId = "";
+      const reportedSessionId = this.acceptReportedSessionId(raw.session_id, raw);
+      if (!reportedSessionId) {
+        return;
+      }
     }
     this.emit({
       type: "turn.completed",
@@ -220,6 +225,38 @@ class ClaudeCodeProcessClient {
     }, raw);
     this.pendingTurnId = "";
     this.activeThreadId = "";
+  }
+
+  acceptReportedSessionId(sessionId, raw) {
+    const reportedSessionId = normalizeSessionId(sessionId);
+    if (!reportedSessionId) {
+      return "";
+    }
+    const expectedSessionId = normalizeSessionId(this.activeThreadId || this.resumeSessionId);
+    if (expectedSessionId && reportedSessionId !== expectedSessionId) {
+      this.rejectUnexpectedSessionId(expectedSessionId, reportedSessionId, raw);
+      return "";
+    }
+    if (this.pendingTurnId && !this.activeThreadId) {
+      this.activeThreadId = reportedSessionId;
+    }
+    this.sessionId = reportedSessionId;
+    this.resumeSessionId = "";
+    this.resolveSessionWaiters(reportedSessionId);
+    return reportedSessionId;
+  }
+
+  rejectUnexpectedSessionId(expectedSessionId, reportedSessionId, raw) {
+    this.suppressNextCloseEvent = true;
+    this.emit({
+      type: "process.error",
+      error: `claudecode resumed unexpected session id: ${reportedSessionId}`,
+      sessionId: expectedSessionId,
+      turnId: this.pendingTurnId,
+    }, raw);
+    setImmediate(() => {
+      this.close().catch(() => {});
+    });
   }
 
   handleControlRequest(raw) {
@@ -393,6 +430,10 @@ function isValidSessionId(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value));
 }
 
+function normalizeSessionId(value) {
+  return typeof value === "string" ? value.replace(/\s+/g, "").trim() : "";
+}
+
 const SENSITIVE_KEYWORDS = /\b(?:key|token|secret|password|credential|api[_-]?key|auth[_-]?token|access[_-]?token|private[_-]?key)\b/i;
 const SENSITIVE_PATTERNS = /\b(?:sk-[a-zA-Z0-9]{20,}|Bearer\s+[a-zA-Z0-9_\-]{20,}|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{36})\b/i;
 
@@ -401,7 +442,3 @@ function isPotentiallySensitive(text) {
 }
 
 module.exports = { ClaudeCodeProcessClient };
-
-function isPendingThreadId(threadId) {
-  return /^pending-\d+$/u.test(String(threadId || "").trim());
-}

@@ -42,8 +42,8 @@ function normalizeModelCatalog(models) {
     if (!model || typeof model !== "object") {
       continue;
     }
-    const modelId = normalizeText(model.model);
-    const id = normalizeText(model.id);
+    const modelId = normalizeText(model.model || model.slug);
+    const id = normalizeText(model.id || model.slug);
     const normalizedModel = modelId || id;
     if (!normalizedModel) {
       continue;
@@ -60,6 +60,9 @@ function normalizeModelCatalog(models) {
       supportedReasoningEfforts: normalizeReasoningEfforts(
         model.supportedReasoningEfforts || model.supported_reasoning_efforts
       ),
+      inputModalities: normalizeTextList(model.inputModalities || model.input_modalities),
+      outputModalities: normalizeTextList(model.outputModalities || model.output_modalities),
+      contextWindow: normalizePositiveInteger(model.contextWindow || model.context_window),
       defaultReasoningEffort: normalizeText(model.defaultReasoningEffort || model.default_reasoning_effort),
       isDefault: !!(model.isDefault || model.is_default),
     });
@@ -96,6 +99,29 @@ function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function normalizeTextList(values) {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  const result = [];
+  const seen = new Set();
+  for (const value of values) {
+    const normalized = normalizeText(value);
+    const key = normalized.toLowerCase();
+    if (!normalized || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function normalizePositiveInteger(value) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 module.exports = {
   extractModelCatalogFromListResponse,
   findModelByQuery,
@@ -103,4 +129,3 @@ module.exports = {
   normalizeText,
   resolveEffectiveModelForEffort,
 };
-

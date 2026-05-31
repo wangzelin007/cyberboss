@@ -141,13 +141,14 @@ class CodexRpcClient {
     this.isReady = true;
   }
 
-  async sendUserMessage({ threadId, text, model = null, effort = null, accessMode = null, workspaceRoot = "" }) {
-    const input = buildTurnInputPayload(text);
+  async sendUserMessage({ threadId, text, attachments = [], model = null, modelProvider = null, effort = null, accessMode = null, workspaceRoot = "" }) {
+    const input = buildTurnInputPayload({ text, attachments });
     return threadId
       ? this.sendRequest("turn/start", buildTurnStartParams({
         threadId,
         input,
         model,
+        modelProvider,
         effort,
         accessMode,
         workspaceRoot,
@@ -156,16 +157,25 @@ class CodexRpcClient {
       : this.sendRequest("thread/start", { input });
   }
 
-  async startThread({ cwd }) {
-    return this.sendRequest("thread/start", buildStartThreadParams(cwd));
+  async startThread({ cwd, model = "", modelProvider = "" }) {
+    return this.sendRequest("thread/start", buildStartThreadParams({ cwd, model, modelProvider }));
   }
 
-  async resumeThread({ threadId }) {
+  async resumeThread({ threadId, model = "", modelProvider = "" }) {
     const normalizedThreadId = normalizeNonEmptyString(threadId);
     if (!normalizedThreadId) {
       throw new Error("thread/resume requires a non-empty threadId");
     }
-    return this.sendRequest("thread/resume", { threadId: normalizedThreadId });
+    const params = { threadId: normalizedThreadId };
+    const normalizedModel = normalizeNonEmptyString(model);
+    const normalizedModelProvider = normalizeNonEmptyString(modelProvider);
+    if (normalizedModel) {
+      params.model = normalizedModel;
+    }
+    if (normalizedModelProvider) {
+      params.modelProvider = normalizedModelProvider;
+    }
+    return this.sendRequest("thread/resume", params);
   }
 
   async compactThread({ threadId }) {
@@ -324,9 +334,21 @@ function normalizeNonEmptyString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
-function buildStartThreadParams(cwd) {
+function buildStartThreadParams({ cwd, model, modelProvider }) {
+  const params = {};
   const normalizedCwd = normalizeNonEmptyString(cwd);
-  return normalizedCwd ? { cwd: normalizedCwd } : {};
+  const normalizedModel = normalizeNonEmptyString(model);
+  const normalizedModelProvider = normalizeNonEmptyString(modelProvider);
+  if (normalizedCwd) {
+    params.cwd = normalizedCwd;
+  }
+  if (normalizedModel) {
+    params.model = normalizedModel;
+  }
+  if (normalizedModelProvider) {
+    params.modelProvider = normalizedModelProvider;
+  }
+  return params;
 }
 
 function buildListThreadsParams({ cursor, limit, sortKey }) {
@@ -340,15 +362,30 @@ function buildListThreadsParams({ cursor, limit, sortKey }) {
   return params;
 }
 
-function buildTurnInputPayload(text) {
+function buildTurnInputPayload({ text, attachments = [] }) {
+  const input = [];
   const normalizedText = normalizeNonEmptyString(text);
-  return normalizedText ? [{ type: "text", text: normalizedText }] : [];
+  if (normalizedText) {
+    input.push({ type: "text", text: normalizedText });
+  }
+  for (const attachment of Array.isArray(attachments) ? attachments : []) {
+    const absolutePath = normalizeNonEmptyString(attachment?.absolutePath);
+    if (!absolutePath) {
+      continue;
+    }
+    input.push({
+      type: "localImage",
+      path: absolutePath,
+    });
+  }
+  return input;
 }
 
-function buildTurnStartParams({ threadId, input, model, effort, accessMode, workspaceRoot, extraWritableRoots = [] }) {
+function buildTurnStartParams({ threadId, input, model, modelProvider, effort, accessMode, workspaceRoot, extraWritableRoots = [] }) {
   const params = { threadId, input };
   const normalizedWorkspaceRoot = normalizeNonEmptyString(workspaceRoot);
   const normalizedModel = normalizeNonEmptyString(model);
+  const normalizedModelProvider = normalizeNonEmptyString(modelProvider);
   const normalizedEffort = normalizeNonEmptyString(effort);
   const normalizedAccessMode = normalizeAccessMode(accessMode);
   const executionPolicies = buildExecutionPolicies(normalizedAccessMode, workspaceRoot, extraWritableRoots);
@@ -357,6 +394,9 @@ function buildTurnStartParams({ threadId, input, model, effort, accessMode, work
   }
   if (normalizedModel) {
     params.model = normalizedModel;
+  }
+  if (normalizedModelProvider) {
+    params.modelProvider = normalizedModelProvider;
   }
   if (normalizedEffort) {
     params.effort = normalizedEffort;

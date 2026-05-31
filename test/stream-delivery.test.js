@@ -8,7 +8,7 @@ const DEFERRED_PLAIN_REPLY_HEADER = "===== 上轮对话遗留内容 =====";
 const DEFERRED_SYSTEM_REPLY_HEADER = "===== 期间模型主动联系 =====";
 const CURRENT_REPLY_HEADER = "===== 本轮模型回复 =====";
 
-function createHarness({ sendText, getKnownContextTokens } = {}) {
+function createHarness({ sendText, getKnownContextTokens, runtimeId = "" } = {}) {
   const sent = [];
   const channelAdapter = {
     async sendText(payload) {
@@ -33,7 +33,7 @@ function createHarness({ sendText, getKnownContextTokens } = {}) {
     },
   };
 
-  const streamDelivery = new StreamDelivery({ channelAdapter, sessionStore });
+  const streamDelivery = new StreamDelivery({ channelAdapter, sessionStore, runtimeId });
   return { sent, streamDelivery, bindingByThreadId };
 }
 
@@ -102,6 +102,94 @@ test("system send_message JSON sends only the message text", async () => {
     text: "在呢",
     contextToken: "ctx-2",
   });
+});
+
+test("system send_message JSON may be wrapped in a json fence", async () => {
+  const { sent, streamDelivery } = createHarness();
+  streamDelivery.queueReplyTargetForThread("thread-2f", {
+    userId: "user-2f",
+    contextToken: "ctx-2f",
+    provider: "system",
+  });
+
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-2f",
+    turnId: "turn-2f",
+    itemId: "item-2f",
+    text: "```json\n{\"action\":\"send_message\",\"message\":\"我来看看你。\"}\n```",
+  });
+
+  assert.deepEqual(sent, [{
+    userId: "user-2f",
+    text: "我来看看你。",
+    contextToken: "ctx-2f",
+  }]);
+});
+
+test("codex system reply rejects plain text", async () => {
+  const { sent, streamDelivery } = createHarness({ runtimeId: "codex" });
+  streamDelivery.queueReplyTargetForThread("thread-2c", {
+    userId: "user-2c",
+    contextToken: "ctx-2c",
+    provider: "system",
+  });
+
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-2c",
+    turnId: "turn-2c",
+    itemId: "item-2c",
+    text: "在呢，过来摸一下你的状态。",
+  });
+
+  assert.deepEqual(sent, []);
+});
+
+test("claudecode system reply can send short safe plain text", async () => {
+  const { sent, streamDelivery } = createHarness({ runtimeId: "claudecode" });
+  streamDelivery.queueReplyTargetForThread("thread-2cc", {
+    userId: "user-2cc",
+    contextToken: "ctx-2cc",
+    provider: "system",
+  });
+
+  await runCompletedTurnWithResultOnly(streamDelivery, {
+    threadId: "thread-2cc",
+    turnId: "turn-2cc",
+    text: "我想起你了，现在还在刚才那件事上吗？",
+  });
+
+  assert.deepEqual(sent, [{
+    userId: "user-2cc",
+    text: "我想起你了，现在还在刚才那件事上吗？",
+    contextToken: "ctx-2cc",
+  }]);
+});
+
+test("claudecode system plain text still rejects code and protocol fragments", async () => {
+  const { sent, streamDelivery } = createHarness({ runtimeId: "claudecode" });
+  streamDelivery.queueReplyTargetForThread("thread-2unsafe-a", {
+    userId: "user-2unsafe",
+    contextToken: "ctx-2unsafe",
+    provider: "system",
+  });
+  streamDelivery.queueReplyTargetForThread("thread-2unsafe-b", {
+    userId: "user-2unsafe",
+    contextToken: "ctx-2unsafe",
+    provider: "system",
+  });
+
+  await runCompletedTurnWithResultOnly(streamDelivery, {
+    threadId: "thread-2unsafe-a",
+    turnId: "turn-2unsafe-a",
+    text: "```js\nconsole.log('hi')\n```",
+  });
+  await runCompletedTurnWithResultOnly(streamDelivery, {
+    threadId: "thread-2unsafe-b",
+    turnId: "turn-2unsafe-b",
+    text: "好的。analysis to=functions.exec_command code?",
+  });
+
+  assert.deepEqual(sent, []);
 });
 
 test("explicit turn target binding overrides the binding-level fallback", async () => {
