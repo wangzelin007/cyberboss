@@ -168,6 +168,35 @@ const PROJECT_TOOLS = [
     },
   },
   {
+    name: "cyberboss_reminder_modify",
+    description: "Modify an existing reminder in place. ALWAYS prefer this over delete+create when the user wants to push a reminder back ('往后放', '推迟到明天'), rephrase the text, or adjust a recurring schedule — using create alone leaves the original entry as a duplicate. List first if you do not have the id. For temp reminders that have already fired and are awaiting ack, modifying dueAt also clears lastFiredAt so the reminder re-enters the due queue. Throws (does NOT silently no-op) if the id is unknown — never fall back to create on a not-found error.",
+    shortHint: "Push back / edit an existing reminder by id (no duplicate).",
+    topics: ["reminder"],
+    inputSchema: {
+      type: "object",
+      required: ["id"],
+      properties: {
+        id: { type: "string", description: "The reminder id (uuid) to modify. Get it via cyberboss_reminder_list." },
+        delayMinutes: { type: "integer", description: "Reschedule to N minutes from now. Mutually exclusive with dueAt." },
+        dueAt: { type: "string", description: "Reschedule to an absolute time, e.g. 2026-04-08T09:00+08:00. Mutually exclusive with delayMinutes." },
+        text: { type: "string", description: "New reminder text. Omit to keep the existing text." },
+        period: { type: "string", description: "Recurring only. New period shorthand, e.g. '2h', '1d'." },
+        periodMs: { type: "integer", description: "Recurring only. New period in milliseconds." },
+        activeHours: { type: "string", description: "Recurring only. New active window 'HH:mm-HH:mm', or empty string to clear." },
+        activeWeekdays: { type: "array", items: { type: "integer", minimum: 0, maximum: 6 }, description: "Recurring only. New allowed weekdays (0=Sunday..6=Saturday); empty array clears the constraint." },
+        userId: { type: "string", description: "Optional explicit WeChat user id." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.reminder.modify(args, context);
+      return {
+        text: `Reminder modified: ${result.id} (${result.changed.join(", ")})`,
+        data: result,
+      };
+    },
+  },
+  {
     name: "cyberboss_reminder_list",
     description: "List queued reminders for the current WeChat user. Use this before assuming what reminders are still pending.",
     shortHint: "List queued reminders for the current user; supports limit and userId.",

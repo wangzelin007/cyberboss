@@ -115,6 +115,118 @@ class ReminderService {
     return this.removeScoped(id, { explicitUser: userId, context, action: "delete", closedBy });
   }
 
+  async modify({
+    id = "",
+    userId = "",
+    delay = "",
+    delayMinutes = undefined,
+    at = "",
+    dueAt = "",
+    text = "",
+    textFile = "",
+    period = "",
+    periodMs = undefined,
+    activeHours = undefined,
+    activeWeekdays = undefined,
+  } = {}, context = {}) {
+    const trimmedId = typeof id === "string" ? id.trim() : "";
+    if (!trimmedId) {
+      throw new Error("Reminder id is required.");
+    }
+
+    const account = resolveSelectedAccount(this.config);
+    const senderId = resolveReminderSenderId({
+      config: this.config,
+      accountId: account.accountId,
+      explicitUser: userId,
+      context,
+      sessionStore: this.sessionStore,
+    });
+
+    this.queue.load();
+    const entry = (this.queue.state?.reminders || []).find((reminder) => reminder.id === trimmedId);
+    if (!entry) {
+      // Modify on a missing id MUST throw, not silently no-op. The whole point
+      // of modify (vs create) is to avoid duplicate reminders; if the AI quietly
+      // succeeded on a missing id it would be tempted to fall back to create
+      // and the duplicate would reappear.
+      throw new Error(`Reminder not found: ${trimmedId}. Do not fall back to create — list reminders first to find the correct id.`);
+    }
+    if (entry.accountId !== account.accountId) {
+      throw new Error("Reminder belongs to a different account.");
+    }
+    if (senderId && entry.senderId !== senderId) {
+      throw new Error("Reminder belongs to a different WeChat user.");
+    }
+
+    const partial = {};
+    let hasChange = false;
+
+    const dueProvided = Boolean(delay) || delayMinutes !== undefined || Boolean(at) || Boolean(dueAt);
+    if (dueProvided) {
+      const newDueAtMs = resolveDueAtMs({ delay, delayMinutes, at, dueAt });
+      if (!Number.isFinite(newDueAtMs) || newDueAtMs <= Date.now()) {
+        throw new Error("Missing a valid future time. Use delayMinutes or dueAt like 2026-04-07T21:30+08:00.");
+      }
+      partial.dueAtMs = newDueAtMs;
+      // Pushing a fired temp back must also clear lastFiredAt — otherwise the
+      // entry stays in the "pending ack" pool and never re-fires at the new
+      // dueAt. This is the canonical "往后放" use case.
+      if (entry.kind === REMINDER_KIND_TEMP) {
+        partial.lastFiredAt = "";
+      }
+      hasChange = true;
+    }
+
+    if (text || textFile) {
+      const body = await resolveBodyInput({ text, textFile });
+      if (!body) {
+        throw new Error("Reminder text cannot be empty when modify provides it.");
+      }
+      partial.text = body;
+      hasChange = true;
+    }
+
+    if (entry.kind === REMINDER_KIND_RECURRING) {
+      if (period || periodMs !== undefined) {
+        const resolvedPeriodMs = resolvePeriodMs({ periodMs, period });
+        if (!Number.isFinite(resolvedPeriodMs) || resolvedPeriodMs < MIN_PERIOD_MS) {
+          throw new Error("Recurring reminders need periodMs >= 60000 or period like '1h', '30m', '1d'.");
+        }
+        partial.periodMs = resolvedPeriodMs;
+        hasChange = true;
+      }
+      if (activeHours !== undefined) {
+        partial.activeHours = String(activeHours || "").trim();
+        hasChange = true;
+      }
+      if (activeWeekdays !== undefined) {
+        partial.activeWeekdays = Array.isArray(activeWeekdays) ? activeWeekdays : [];
+        hasChange = true;
+      }
+    } else if (period || periodMs !== undefined || activeHours !== undefined || activeWeekdays !== undefined) {
+      throw new Error("period / activeHours / activeWeekdays apply to recurring reminders only.");
+    }
+
+    if (!hasChange) {
+      throw new Error("Modify requires at least one field to change (delayMinutes/dueAt/text/period/activeHours/activeWeekdays).");
+    }
+
+    const updated = this.queue.update(trimmedId, partial);
+    if (!updated) {
+      throw new Error(`Reminder modify failed for ${trimmedId} (normalization rejected the merged entry).`);
+    }
+    return {
+      id: trimmedId,
+      action: "modify",
+      changed: Object.keys(partial),
+      kind: updated.kind,
+      text: updated.text,
+      dueAtMs: updated.dueAtMs,
+      lastFiredAt: updated.lastFiredAt || "",
+    };
+  }
+
   removeScoped(id, { explicitUser = "", context = {}, action = "remove", closedBy = "ai" } = {}) {
     const trimmedId = typeof id === "string" ? id.trim() : "";
     if (!trimmedId) {

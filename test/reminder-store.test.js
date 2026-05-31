@@ -364,3 +364,155 @@ test("SystemMessageQueueStore.hasMessageId enables idempotent reminder enqueue",
   assert.equal(store.hasMessageId(""), false);
   assert.equal(store.hasMessageId("not-there"), false);
 });
+
+test("modify reschedules a fired temp reminder and clears lastFiredAt so it re-enters listDue", () => {
+  const { config, accountId, senderId } = buildServiceFixture();
+  const service = new ReminderService({ config, sessionStore: null });
+  // Simulate a temp reminder that fired but was never acked — the canonical
+  // "往后放" scenario where the AI must NOT create a duplicate.
+  service.queue.enqueue({
+    id: "fired-pending",
+    accountId,
+    senderId,
+    contextToken: "tok-context",
+    text: "CBA card not received yet",
+    dueAtMs: Date.now() - 60_000,
+    createdAt: new Date().toISOString(),
+    kind: "temp",
+    lastFiredAt: new Date().toISOString(),
+  });
+  // Sanity: while pending-ack the entry is excluded from listDue.
+  assert.equal(service.queue.listDue(Date.now()).length, 0);
+
+  return service.modify({ id: "fired-pending", delayMinutes: 30 }, { senderId }).then((result) => {
+    assert.equal(result.id, "fired-pending");
+    assert.equal(result.action, "modify");
+    assert.ok(result.changed.includes("dueAtMs"));
+    assert.ok(result.changed.includes("lastFiredAt"));
+    assert.equal(result.lastFiredAt, "");
+
+    // No duplicate: queue still has a single entry.
+    service.queue.load();
+    assert.equal(service.queue.state.reminders.length, 1);
+    const entry = service.queue.state.reminders[0];
+    assert.equal(entry.id, "fired-pending");
+    assert.equal(entry.lastFiredAt, "");
+    assert.ok(entry.dueAtMs > Date.now() + 25 * 60_000);
+    assert.ok(entry.dueAtMs <= Date.now() + 31 * 60_000);
+  });
+});
+
+test("modify on an unknown id throws (must not silently no-op or AI will fall back to create)", async () => {
+  const { config, senderId } = buildServiceFixture();
+  const service = new ReminderService({ config, sessionStore: null });
+  await assert.rejects(
+    () => service.modify({ id: "nope", delayMinutes: 10 }, { senderId }),
+    /Reminder not found: nope/,
+  );
+});
+
+test("modify text only changes text and keeps schedule + kind intact", async () => {
+  const { config, accountId, senderId } = buildServiceFixture();
+  const service = new ReminderService({ config, sessionStore: null });
+  const dueAtMs = Date.now() + 3_600_000;
+  service.queue.enqueue({
+    id: "to-rephrase",
+    accountId,
+    senderId,
+    contextToken: "tok-context",
+    text: "old text",
+    dueAtMs,
+    createdAt: new Date().toISOString(),
+    kind: "temp",
+  });
+  const result = await service.modify({ id: "to-rephrase", text: "new text" }, { senderId });
+  assert.equal(result.text, "new text");
+  assert.deepEqual(result.changed, ["text"]);
+  service.queue.load();
+  assert.equal(service.queue.state.reminders[0].dueAtMs, dueAtMs);
+  assert.equal(service.queue.state.reminders[0].kind, "temp");
+});
+
+test("modify rejects period/activeHours on a temp reminder", async () => {
+  const { config, accountId, senderId } = buildServiceFixture();
+  const service = new ReminderService({ config, sessionStore: null });
+  service.queue.enqueue({
+    id: "temp-no-period",
+    accountId,
+    senderId,
+    contextToken: "tok-context",
+    text: "single shot",
+    dueAtMs: Date.now() + 60_000,
+    createdAt: new Date().toISOString(),
+    kind: "temp",
+  });
+  await assert.rejects(
+    () => service.modify({ id: "temp-no-period", period: "1h" }, { senderId }),
+    /recurring reminders only/,
+  );
+});
+
+test("modify updates recurring periodMs and activeHours together", async () => {
+  const { config, accountId, senderId } = buildServiceFixture();
+  const service = new ReminderService({ config, sessionStore: null });
+  service.queue.enqueue({
+    id: "rec-tweak",
+    accountId,
+    senderId,
+    contextToken: "tok-context",
+    text: "drink water",
+    dueAtMs: Date.now() + 60_000,
+    createdAt: new Date().toISOString(),
+    kind: "recurring",
+    periodMs: 3_600_000,
+    activeHours: "09:00-18:00",
+  });
+  const result = await service.modify(
+    { id: "rec-tweak", period: "2h", activeHours: "10:00-20:00" },
+    { senderId },
+  );
+  assert.ok(result.changed.includes("periodMs"));
+  assert.ok(result.changed.includes("activeHours"));
+  service.queue.load();
+  const entry = service.queue.state.reminders[0];
+  assert.equal(entry.periodMs, 2 * 60 * 60_000);
+  assert.equal(entry.activeHours, "10:00-20:00");
+});
+
+test("modify requires at least one mutable field (no-arg call is rejected)", async () => {
+  const { config, accountId, senderId } = buildServiceFixture();
+  const service = new ReminderService({ config, sessionStore: null });
+  service.queue.enqueue({
+    id: "noop-target",
+    accountId,
+    senderId,
+    contextToken: "tok-context",
+    text: "ping",
+    dueAtMs: Date.now() + 60_000,
+    createdAt: new Date().toISOString(),
+    kind: "temp",
+  });
+  await assert.rejects(
+    () => service.modify({ id: "noop-target" }, { senderId }),
+    /at least one field/,
+  );
+});
+
+test("modify scope check: rejects modifying a reminder owned by another sender", async () => {
+  const { config, accountId } = buildServiceFixture();
+  const service = new ReminderService({ config, sessionStore: null });
+  service.queue.enqueue({
+    id: "other-user",
+    accountId,
+    senderId: "someone-else",
+    contextToken: "tok-context",
+    text: "private",
+    dueAtMs: Date.now() + 60_000,
+    createdAt: new Date().toISOString(),
+    kind: "temp",
+  });
+  await assert.rejects(
+    () => service.modify({ id: "other-user", delayMinutes: 5 }, { senderId: "user-test" }),
+    /different WeChat user/,
+  );
+});
