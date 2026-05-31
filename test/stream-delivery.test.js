@@ -500,6 +500,54 @@ test("system send_message is deferred after retry exhaustion", async () => {
   assert.equal(deferred[0].text, "等等我");
 });
 
+test("deferred system reply log line includes WeChat error diagnostics (ret/errcode/errmsg/token suffixes)", async () => {
+  const originalWarn = console.warn;
+  const warnLines = [];
+  console.warn = (line) => warnLines.push(String(line));
+  try {
+    const { streamDelivery } = createHarness({
+      async sendText() {
+        const error = new Error("sendMessage ret=-2 errcode=0 errmsg=context_token expired");
+        error.ret = -2;
+        error.errcode = 0;
+        error.errmsg = "context_token expired";
+        throw error;
+      },
+      // Cache holds the same stale token as the target — proves the retry path is
+      // ineffective and the deferred log surfaces cacheMatchesTarget=true.
+      getKnownContextTokens() {
+        return { "user-defer-diag": "ctxAAAAAAAAAAstaleSUFFIX" };
+      },
+    });
+    streamDelivery.onDeferredSystemReply = async () => {};
+    streamDelivery.queueReplyTargetForThread("thread-defer-diag", {
+      userId: "user-defer-diag",
+      contextToken: "ctxAAAAAAAAAAstaleSUFFIX",
+      provider: "system",
+    });
+
+    await runCompletedTurn(streamDelivery, {
+      threadId: "thread-defer-diag",
+      turnId: "turn-defer-diag",
+      itemId: "item-defer-diag",
+      text: "{\"action\":\"send_message\",\"message\":\"今天有这些 todo\"}",
+    });
+
+    const deferredLine = warnLines.find((line) => line.includes("deferred system reply until the next inbound message"));
+    assert.ok(deferredLine, `expected a deferred-system-reply warn line, got: ${warnLines.join("\n")}`);
+    assert.match(deferredLine, /kind=system_reply/);
+    assert.match(deferredLine, /ret=-2/);
+    assert.match(deferredLine, /errcode=0/);
+    assert.match(deferredLine, /errmsg="context_token expired"/);
+    assert.match(deferredLine, /targetTokenSuffix=SUFFIX/);
+    assert.match(deferredLine, /cachedTokenSuffix=SUFFIX/);
+    assert.match(deferredLine, /cacheMatchesTarget=true/);
+    assert.match(deferredLine, /textPreview="今天有这些 todo"/);
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
 test("plain reply prepends deferred prefix to the next reply", async () => {
   const { sent, streamDelivery, bindingByThreadId } = createHarness();
   bindingByThreadId.set("thread-7", { bindingKey: "binding-7" });
@@ -563,4 +611,84 @@ test("plain reply with deferred prefix is sent as soon as the first item is fina
     contextToken: "ctx-8",
     preserveBlock: true,
   });
+});
+
+test("system reply with no agent message logs invalid empty + item summary diagnostics", async () => {
+  const { sent, streamDelivery } = createHarness();
+  streamDelivery.queueReplyTargetForThread("thread-empty", {
+    userId: "user-empty",
+    contextToken: "ctx-empty",
+    provider: "system",
+  });
+
+  const errors = [];
+  const originalError = console.error;
+  console.error = (...args) => { errors.push(args.join(" ")); };
+  try {
+    // Simulate a turn where codex never emitted any AgentMessage:
+    // turn.started -> turn.completed (no reply.completed in between).
+    await streamDelivery.handleRuntimeEvent({
+      type: "runtime.turn.started",
+      payload: { threadId: "thread-empty", turnId: "turn-empty" },
+    });
+    await streamDelivery.handleRuntimeEvent({
+      type: "runtime.turn.completed",
+      payload: { threadId: "thread-empty", turnId: "turn-empty" },
+    });
+  } finally {
+    console.error = originalError;
+  }
+
+  // Nothing is sent on the channel for an invalid system reply.
+  assert.deepEqual(sent, []);
+  // Diagnostic line is emitted with item count + chars so we can root-cause
+  // empty replies in production logs.
+  const headline = errors.find((line) => line.includes("invalid system reply") && line.includes("thread=thread-empty"));
+  assert.ok(headline, `expected invalid system reply log, got: ${JSON.stringify(errors)}`);
+  assert.match(headline, /reason=final reply is empty/);
+  assert.match(headline, /turn=turn-empty/);
+  assert.match(headline, /items=0/);
+  assert.match(headline, /totalChars=0/);
+  assert.match(headline, /completedItems=0/);
+});
+
+test("system reply with only empty agent message item is logged with item details", async () => {
+  const { sent, streamDelivery } = createHarness();
+  streamDelivery.queueReplyTargetForThread("thread-empty2", {
+    userId: "user-empty2",
+    contextToken: "ctx-empty2",
+    provider: "system",
+  });
+
+  const errors = [];
+  const originalError = console.error;
+  console.error = (...args) => { errors.push(args.join(" ")); };
+  try {
+    await streamDelivery.handleRuntimeEvent({
+      type: "runtime.turn.started",
+      payload: { threadId: "thread-empty2", turnId: "turn-empty2" },
+    });
+    // reply.completed with empty text — upsertItem drops it (current code),
+    // so itemOrder stays empty. Verify diagnostic still surfaces.
+    await streamDelivery.handleRuntimeEvent({
+      type: "runtime.reply.completed",
+      payload: {
+        threadId: "thread-empty2",
+        turnId: "turn-empty2",
+        itemId: "item-empty",
+        text: "",
+      },
+    });
+    await streamDelivery.handleRuntimeEvent({
+      type: "runtime.turn.completed",
+      payload: { threadId: "thread-empty2", turnId: "turn-empty2" },
+    });
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.deepEqual(sent, []);
+  const headline = errors.find((line) => line.includes("invalid system reply") && line.includes("thread=thread-empty2"));
+  assert.ok(headline, `expected invalid system reply log, got: ${JSON.stringify(errors)}`);
+  assert.match(headline, /items=0/);
 });

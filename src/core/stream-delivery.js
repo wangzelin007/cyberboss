@@ -333,9 +333,15 @@ class StreamDelivery {
     }
 
     if (resolved.kind !== "send_message") {
+      const itemSummary = summarizeStateItems(state);
       console.error(
-        `[cyberboss] invalid system reply thread=${state.threadId} reason=${resolved.reason} preview=${JSON.stringify(replyText.slice(0, 160))}`
+        `[cyberboss] invalid system reply thread=${state.threadId} turn=${state.turnId || "-"} reason=${resolved.reason} items=${itemSummary.count} totalChars=${itemSummary.totalChars} completedItems=${itemSummary.completedCount} preview=${JSON.stringify(replyText.slice(0, 160))}`
       );
+      if (itemSummary.detail) {
+        console.error(
+          `[cyberboss] invalid system reply detail thread=${state.threadId} ${itemSummary.detail}`
+        );
+      }
       return;
     }
 
@@ -456,11 +462,23 @@ class StreamDelivery {
         kind,
       });
       console.warn(
-        `[cyberboss] deferred system reply until the next inbound message thread=${state.threadId} user=${target.userId}`
+        `[cyberboss] deferred system reply until the next inbound message thread=${state.threadId} user=${target.userId} kind=${kind} ${summarizeDeferDiagnostics({
+          error,
+          text,
+          target,
+          channelAdapter: this.channelAdapter,
+        })}`
       );
       return true;
     } catch (deferError) {
-      console.error(`[cyberboss] failed to defer system reply thread=${state.threadId}: ${deferError.message}`);
+      console.error(
+        `[cyberboss] failed to defer system reply thread=${state.threadId} kind=${kind} ${summarizeDeferDiagnostics({
+          error,
+          text,
+          target,
+          channelAdapter: this.channelAdapter,
+        })} deferErrorMessage=${JSON.stringify(deferError?.message || "")}`
+      );
       return false;
     }
   }
@@ -952,6 +970,66 @@ function normalizeNumericErrorCode(value) {
   }
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
+}
+
+function summarizeStateItems(state) {
+  const order = Array.isArray(state?.itemOrder) ? state.itemOrder : [];
+  const items = state?.items;
+  if (!items || typeof items.get !== "function") {
+    return { count: 0, totalChars: 0, completedCount: 0, detail: "" };
+  }
+  let totalChars = 0;
+  let completedCount = 0;
+  const parts = [];
+  for (const itemId of order) {
+    const item = items.get(itemId);
+    if (!item) continue;
+    const currentLen = typeof item.currentText === "string" ? item.currentText.length : 0;
+    const completedLen = typeof item.completedText === "string" ? item.completedText.length : 0;
+    totalChars += Math.max(currentLen, completedLen);
+    if (item.completed) completedCount += 1;
+    parts.push(`${itemId}{completed=${Boolean(item.completed)},currentChars=${currentLen},completedChars=${completedLen}}`);
+  }
+  return {
+    count: order.length,
+    totalChars,
+    completedCount,
+    detail: parts.join(" "),
+  };
+}
+
+function summarizeDeferDiagnostics({ error, text, target, channelAdapter }) {
+  const ret = normalizeNumericErrorCode(error?.ret);
+  const errcode = normalizeNumericErrorCode(error?.errcode);
+  const errmsg = typeof error?.errmsg === "string" ? error.errmsg : "";
+  const message = String(error?.message || "");
+  const previewText = typeof text === "string" ? text.replace(/\s+/g, " ").slice(0, 80) : "";
+  const targetTokenSuffix = typeof target?.contextToken === "string" && target.contextToken
+    ? target.contextToken.slice(-6)
+    : "";
+  let cachedTokenSuffix = "";
+  let cacheMatchesTarget = "";
+  if (channelAdapter && typeof channelAdapter.getKnownContextTokens === "function") {
+    try {
+      const cached = channelAdapter.getKnownContextTokens()?.[target?.userId];
+      if (typeof cached === "string" && cached) {
+        cachedTokenSuffix = cached.slice(-6);
+        cacheMatchesTarget = String(cached === target?.contextToken);
+      }
+    } catch {
+      cachedTokenSuffix = "(lookup_failed)";
+    }
+  }
+  return [
+    `ret=${ret === null ? "" : ret}`,
+    `errcode=${errcode === null ? "" : errcode}`,
+    `errmsg=${JSON.stringify(errmsg)}`,
+    `errorMessage=${JSON.stringify(message)}`,
+    `targetTokenSuffix=${targetTokenSuffix}`,
+    `cachedTokenSuffix=${cachedTokenSuffix}`,
+    `cacheMatchesTarget=${cacheMatchesTarget}`,
+    `textPreview=${JSON.stringify(previewText)}`,
+  ].join(" ");
 }
 
 module.exports = { StreamDelivery };
