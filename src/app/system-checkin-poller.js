@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 
 const { resolveSelectedAccount } = require("../adapters/channel/weixin/account-store");
+const { ReminderQueueStore } = require("../adapters/channel/weixin/reminder-queue-store");
 const { SessionStore } = require("../adapters/runtime/codex/session-store");
 const { CheckinConfigStore, resolveDefaultCheckinRange } = require("../core/checkin-config-store");
 const { resolvePreferredSenderId, resolvePreferredWorkspaceRoot } = require("../core/default-targets");
@@ -11,6 +12,7 @@ const INTERNAL_CHECKIN_TRIGGER_TEMPLATE = "%USER% comes to mind again.";
 async function runSystemCheckinPoller(config) {
   const account = resolveSelectedAccount(config);
   const queue = new SystemMessageQueueStore({ filePath: config.systemMessageQueueFile });
+  const reminderQueue = new ReminderQueueStore({ filePath: config.reminderQueueFile });
   const checkinConfigStore = new CheckinConfigStore({ filePath: config.checkinConfigFile });
   const sessionStore = new SessionStore({ filePath: config.sessionsFile });
   const target = resolvePollerTarget({ config, account, sessionStore });
@@ -37,7 +39,7 @@ async function runSystemCheckinPoller(config) {
       accountId: account.accountId,
       senderId: target.senderId,
       workspaceRoot: target.workspaceRoot,
-      text: buildCheckinTrigger(config),
+      text: buildCheckinTrigger(config, { reminderQueue, accountId: account.accountId, senderId: target.senderId }),
       createdAt: new Date().toISOString(),
     });
     console.log(`[cyberboss] checkin queued id=${queued.id}`);
@@ -105,9 +107,37 @@ function formatRangeMinutes(range) {
   return `${Math.round(range.minIntervalMs / 60000)}m-${Math.round(range.maxIntervalMs / 60000)}m`;
 }
 
-function buildCheckinTrigger(config) {
+function buildCheckinTrigger(config, options = {}) {
   const userName = normalizeText(config?.userName) || "the user";
-  return INTERNAL_CHECKIN_TRIGGER_TEMPLATE.replace("%USER%", userName);
+  const base = INTERNAL_CHECKIN_TRIGGER_TEMPLATE.replace("%USER%", userName);
+  const pending = collectPendingTempReminders(options);
+  if (!pending.length) {
+    return base;
+  }
+  const lines = [base, "", "Pending temp reminders awaiting ack (these did not auto-clear):"];
+  const nowMs = Date.now();
+  for (const reminder of pending) {
+    const lastFiredMs = reminder.lastFiredAt ? Date.parse(reminder.lastFiredAt) : NaN;
+    const pendingHours = Number.isFinite(lastFiredMs)
+      ? Math.max(0, Math.round((nowMs - lastFiredMs) / 3_600_000))
+      : 0;
+    const safeText = String(reminder.text || "").replace(/\s+/g, " ").trim();
+    lines.push(`- id=${reminder.id} | "${safeText}" | pending ${pendingHours}h`);
+  }
+  lines.push("");
+  lines.push("Decide whether to bring any up now based on context. When the user clearly confirms a task is done, call cyberboss_reminder_ack({id}). When the user explicitly cancels one, call cyberboss_reminder_delete({id}). Staying silent is fine if it is not the right moment to interrupt.");
+  return lines.join("\n");
+}
+
+function collectPendingTempReminders({ reminderQueue, accountId, senderId } = {}) {
+  if (!reminderQueue || typeof reminderQueue.listPendingTemp !== "function") {
+    return [];
+  }
+  try {
+    return reminderQueue.listPendingTemp({ accountId, senderId });
+  } catch {
+    return [];
+  }
 }
 
 module.exports = { runSystemCheckinPoller };
