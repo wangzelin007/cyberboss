@@ -129,6 +129,37 @@ test("claudecode approval events capture Write file paths for state-dir auto app
   assert.deepEqual(event.payload.filePaths, ["/Users/tingyiwen/.cyberboss/notes/today.md"]);
 });
 
+test("claudecode adapter exposes image file read capability for Claude multimodal models", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cb-claude-vision-"));
+  const adapter = createClaudeCodeRuntimeAdapter({
+    stateDir: tempDir,
+    sessionsFile: path.join(tempDir, "sessions.json"),
+    claudeModel: "",
+  });
+  const configured = createClaudeCodeRuntimeAdapter({
+    stateDir: tempDir,
+    sessionsFile: path.join(tempDir, "configured-sessions.json"),
+    claudeModel: "sonnet",
+  });
+
+  assert.deepEqual(adapter.getTurnCapabilities({ model: "claude-sonnet" }), {
+    nativeImageInput: false,
+    toolImageRead: true,
+  });
+  assert.deepEqual(adapter.getTurnCapabilities({ model: "claude-3-5-sonnet-20241022" }), {
+    nativeImageInput: false,
+    toolImageRead: true,
+  });
+  assert.deepEqual(configured.getTurnCapabilities({ model: "deepseek-chat" }), {
+    nativeImageInput: false,
+    toolImageRead: true,
+  });
+  assert.deepEqual(adapter.getTurnCapabilities({ model: "deepseek-chat" }), {
+    nativeImageInput: false,
+    toolImageRead: false,
+  });
+});
+
 test("claudecode assistant events map usage into context snapshots", () => {
   const event = mapClaudeCodeMessageToRuntimeEvent(
     {
