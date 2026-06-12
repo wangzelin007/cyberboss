@@ -6,6 +6,8 @@ const fs = require("node:fs");
 
 const { CyberbossApp } = require("../src/core/app");
 const { mapClaudeCodeMessageToRuntimeEvent } = require("../src/adapters/runtime/claudecode/events");
+const { createClaudeCodeRuntimeAdapter } = require("../src/adapters/runtime/claudecode");
+const { ClaudeCodeProcessClient } = require("../src/adapters/runtime/claudecode/process-client");
 const { SessionStore } = require("../src/adapters/runtime/codex/session-store");
 
 test("claudecode approval events extract command tokens from exec_command input", () => {
@@ -127,6 +129,109 @@ test("claudecode approval events capture Write file paths for state-dir auto app
   assert.deepEqual(event.payload.filePaths, ["/Users/tingyiwen/.cyberboss/notes/today.md"]);
 });
 
+test("claudecode adapter exposes image file read capability only for known image-capable models", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cb-claude-vision-"));
+  const adapter = createClaudeCodeRuntimeAdapter({
+    stateDir: tempDir,
+    sessionsFile: path.join(tempDir, "sessions.json"),
+  });
+  const configured = createClaudeCodeRuntimeAdapter({
+    stateDir: tempDir,
+    sessionsFile: path.join(tempDir, "configured-sessions.json"),
+    claudeModel: "sonnet",
+  });
+
+  assert.deepEqual(adapter.getTurnCapabilities({ model: "" }), {
+    nativeImageInput: false,
+    toolImageRead: false,
+  });
+  assert.deepEqual(adapter.getTurnCapabilities({ model: "claude-sonnet" }), {
+    nativeImageInput: false,
+    toolImageRead: true,
+  });
+  assert.deepEqual(adapter.getTurnCapabilities({ model: "deepseek-chat" }), {
+    nativeImageInput: false,
+    toolImageRead: false,
+  });
+  assert.deepEqual(configured.getTurnCapabilities({ model: "deepseek-chat" }), {
+    nativeImageInput: false,
+    toolImageRead: true,
+  });
+});
+
+test("claudecode adapter hydrates model from Claude project transcript", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cb-claude-project-model-"));
+  const stateDir = path.join(tempDir, "state");
+  const claudeConfigDir = path.join(tempDir, "claude");
+  const workspaceRoot = path.join(tempDir, "workspace root");
+  const sessionId = "77777777-7777-4777-8777-777777777777";
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+  const projectDir = path.join(claudeConfigDir, "projects", workspaceRoot.replace(/[\\/:\s]+/g, "-"));
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.writeFileSync(path.join(projectDir, `${sessionId}.jsonl`), [
+    JSON.stringify({ type: "assistant", message: { model: "deepseek-v4-flash" } }),
+    JSON.stringify({ type: "assistant", message: { model: "claude-sonnet-4-6" } }),
+  ].join("\n"));
+  const sessionsFile = path.join(tempDir, "sessions.json");
+  new SessionStore({ filePath: sessionsFile, runtimeId: "claudecode" })
+    .setThreadIdForWorkspace("binding-1", workspaceRoot, sessionId);
+
+  const adapter = createClaudeCodeRuntimeAdapter({
+    stateDir,
+    sessionsFile,
+    claudeConfigDir,
+  });
+
+  assert.deepEqual(adapter.getSessionStore().getRuntimeParamsForWorkspace("binding-1", workspaceRoot), {
+    model: "claude-sonnet-4-6",
+    modelProvider: "",
+  });
+});
+
+test("claudecode adapter remembers model observed in stream messages", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cb-claude-stream-model-"));
+  const workspaceRoot = path.join(tempDir, "workspace");
+  const stateDir = path.join(tempDir, "state");
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+  fs.mkdirSync(stateDir, { recursive: true });
+  const commandFile = path.join(tempDir, "fake-claude.js");
+  const sessionId = "88888888-8888-4888-8888-888888888888";
+  fs.writeFileSync(commandFile, [
+    "#!/usr/bin/env node",
+    "process.stdin.on(\"data\", () => {",
+    `  console.log(JSON.stringify({ type: "system", session_id: ${JSON.stringify(sessionId)} }));`,
+    "  console.log(JSON.stringify({ type: \"assistant\", message: { model: \"claude-sonnet-4-6\", content: [{ type: \"text\", text: \"done\" }] } }));",
+    `  console.log(JSON.stringify({ type: "result", session_id: ${JSON.stringify(sessionId)}, result: "done" }));`,
+    "  process.exit(0);",
+    "});",
+  ].join("\n"));
+  fs.chmodSync(commandFile, 0o755);
+
+  const adapter = createClaudeCodeRuntimeAdapter({
+    stateDir,
+    sessionsFile: path.join(tempDir, "sessions.json"),
+    claudeCommand: commandFile,
+    claudeDisableVerbose: true,
+  });
+
+  try {
+    await adapter.sendTurn({
+      bindingKey: "binding-1",
+      workspaceRoot,
+      text: "hello",
+    });
+    const sessionsText = await waitForFileText(path.join(tempDir, "sessions.json"), /claude-sonnet-4-6/);
+    assert.match(sessionsText, /claude-sonnet-4-6/);
+    assert.deepEqual(adapter.getSessionStore().getRuntimeParamsForWorkspace("binding-1", workspaceRoot), {
+      model: "claude-sonnet-4-6",
+      modelProvider: "",
+    });
+  } finally {
+    await adapter.close();
+  }
+});
+
 test("claudecode assistant events map usage into context snapshots", () => {
   const event = mapClaudeCodeMessageToRuntimeEvent(
     {
@@ -149,6 +254,235 @@ test("claudecode assistant events map usage into context snapshots", () => {
   assert.equal(event.payload.runtimeId, "claudecode");
   assert.equal(event.payload.threadId, "thread-1");
   assert.equal(event.payload.currentTokens, 27201);
+});
+
+test("claudecode adapter dispatches turns only after a real session id is available", async () => {
+  const tempDir = fs.mkdtempSync(path.join("/tmp", "cb-claude-"));
+  const workspaceRoot = path.join(tempDir, "workspace");
+  const stateDir = path.join(tempDir, "state");
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+  fs.mkdirSync(stateDir, { recursive: true });
+  const captureFile = path.join(tempDir, "stdin.log");
+  const commandFile = path.join(tempDir, "fake-claude.js");
+  const sessionId = "11111111-1111-4111-8111-111111111111";
+  fs.writeFileSync(commandFile, [
+    "#!/usr/bin/env node",
+    `const fs = require("node:fs");`,
+    "process.stdin.on(\"data\", (chunk) => {",
+    `  fs.appendFileSync(${JSON.stringify(captureFile)}, chunk);`,
+    `  console.log(JSON.stringify({ type: "system", session_id: ${JSON.stringify(sessionId)} }));`,
+    "  process.exit(0);",
+    "});",
+  ].join("\n"));
+  fs.chmodSync(commandFile, 0o755);
+
+  const adapter = createClaudeCodeRuntimeAdapter({
+    stateDir,
+    sessionsFile: path.join(tempDir, "sessions.json"),
+    claudeCommand: commandFile,
+    claudePermissionMode: "default",
+    claudeDisableVerbose: true,
+    claudeExtraArgs: [],
+  });
+
+  try {
+    const turn = await adapter.sendTurn({
+      bindingKey: "binding-1",
+      workspaceRoot,
+      text: "hello",
+      metadata: {
+        senderId: "user-1",
+      },
+      model: "claude-sonnet",
+    });
+
+    assert.equal(turn.threadId, sessionId);
+    assert.match(turn.turnId, /^turn-\d+$/);
+    assert.equal(adapter.getSessionStore().getThreadIdForWorkspace("binding-1", workspaceRoot), sessionId);
+    assert.deepEqual(adapter.getSessionStore().getRuntimeParamsForWorkspace("binding-1", workspaceRoot), {
+      model: "claude-sonnet",
+      modelProvider: "",
+    });
+    assert.doesNotMatch(turn.threadId, /^pending-/);
+    assert.match(await waitForFileText(captureFile, /hello/), /hello/);
+  } finally {
+    await adapter.close();
+  }
+});
+
+test("claudecode process client treats assistant text as non-deliverable until the result event", () => {
+  const client = new ClaudeCodeProcessClient({
+    command: "claude",
+    cwd: "/workspace",
+    env: {},
+  });
+  client.pendingTurnId = "turn-tool";
+  client.sessionId = "thread-tool";
+  client.activeThreadId = "thread-tool";
+  const messages = [];
+  client.onMessage((event, raw) => {
+    messages.push({ event, raw });
+  });
+
+  client.handleAssistant({
+    type: "assistant",
+    message: {
+      content: [
+        { type: "text", text: "我先查一下。" },
+        { type: "tool_use", name: "mcp__cyberboss_tools__cyberboss_timeline_read", input: { date: "2026-05-19" } },
+      ],
+    },
+  });
+  client.handleResult({
+    type: "result",
+    session_id: "thread-tool",
+    result: "查完了，这是工具后的最终结果。",
+  });
+
+  assert.deepEqual(messages.map((entry) => entry.event.type), [
+    "assistant.text",
+    "tool.use",
+    "turn.completed",
+  ]);
+  assert.equal(mapClaudeCodeMessageToRuntimeEvent(messages[0].event, messages[0].raw), null);
+  const completed = mapClaudeCodeMessageToRuntimeEvent(messages[2].event, messages[2].raw);
+  assert.equal(completed.type, "runtime.turn.completed");
+  assert.equal(completed.payload.threadId, "thread-tool");
+  assert.equal(completed.payload.turnId, "turn-tool");
+  assert.equal(completed.payload.text, "查完了，这是工具后的最终结果。");
+});
+
+test("claudecode runtime params are isolated from codex model selections", () => {
+  const sessionsFile = path.join(
+    os.tmpdir(),
+    `cyberboss-runtime-params-${Date.now()}-${Math.random().toString(16).slice(2)}.json`
+  );
+  const codexStore = new SessionStore({ filePath: sessionsFile, runtimeId: "codex" });
+  const claudecodeStore = new SessionStore({ filePath: sessionsFile, runtimeId: "claudecode" });
+
+  codexStore.setRuntimeParamsForWorkspace("binding-1", "/workspace", {
+    model: "gpt-5.5",
+    modelProvider: "openai",
+  });
+
+  assert.deepEqual(claudecodeStore.getRuntimeParamsForWorkspace("binding-1", "/workspace"), {
+    model: "",
+    modelProvider: "",
+  });
+
+  claudecodeStore.setRuntimeParamsForWorkspace("binding-1", "/workspace", {
+    model: "deepseek-v4-pro",
+  });
+
+  assert.deepEqual(codexStore.getRuntimeParamsForWorkspace("binding-1", "/workspace"), {
+    model: "gpt-5.5",
+    modelProvider: "openai",
+  });
+  assert.deepEqual(claudecodeStore.getRuntimeParamsForWorkspace("binding-1", "/workspace"), {
+    model: "deepseek-v4-pro",
+    modelProvider: "",
+  });
+});
+
+test("claudecode adapter does not pass a codex-selected model to Claude Code", async () => {
+  const tempDir = fs.mkdtempSync(path.join("/tmp", "cb-claude-model-"));
+  const workspaceRoot = path.join(tempDir, "workspace");
+  const stateDir = path.join(tempDir, "state");
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+  fs.mkdirSync(stateDir, { recursive: true });
+  const sessionsFile = path.join(tempDir, "sessions.json");
+  const argsFile = path.join(tempDir, "args.json");
+  const commandFile = path.join(tempDir, "fake-claude.js");
+  const sessionId = "22222222-2222-4222-8222-222222222222";
+  new SessionStore({ filePath: sessionsFile, runtimeId: "codex" })
+    .setRuntimeParamsForWorkspace("binding-1", workspaceRoot, {
+      model: "gpt-5.5",
+      modelProvider: "openai",
+    });
+  fs.writeFileSync(commandFile, [
+    "#!/usr/bin/env node",
+    `const fs = require("node:fs");`,
+    `fs.writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(process.argv.slice(2)));`,
+    "process.stdin.on(\"data\", () => {",
+    `  console.log(JSON.stringify({ type: "system", session_id: ${JSON.stringify(sessionId)} }));`,
+    "  process.exit(0);",
+    "});",
+  ].join("\n"));
+  fs.chmodSync(commandFile, 0o755);
+
+  const adapter = createClaudeCodeRuntimeAdapter({
+    stateDir,
+    sessionsFile,
+    claudeCommand: commandFile,
+    claudePermissionMode: "default",
+    claudeDisableVerbose: true,
+    claudeExtraArgs: [],
+  });
+
+  try {
+    await adapter.sendTurn({
+      bindingKey: "binding-1",
+      workspaceRoot,
+      text: "hello",
+    });
+    const args = JSON.parse(await waitForFileText(argsFile, /]/));
+    assert.equal(args.includes("--model"), false);
+    assert.equal(args.includes("gpt-5.5"), false);
+    assert.deepEqual(adapter.getSessionStore().getRuntimeParamsForWorkspace("binding-1", workspaceRoot), {
+      model: "",
+      modelProvider: "",
+    });
+  } finally {
+    await adapter.close();
+  }
+});
+
+test("claudecode process client rejects a different resumed session id", () => {
+  const client = new ClaudeCodeProcessClient({
+    command: "claude",
+    cwd: "/workspace",
+    env: {},
+  });
+  client.pendingTurnId = "turn-resume";
+  client.activeThreadId = "33333333-3333-4333-8333-333333333333";
+  const events = [];
+  client.onMessage((event) => {
+    events.push(event);
+  });
+
+  client.handleLine(JSON.stringify({
+    type: "system",
+    session_id: "44444444-4444-4444-8444-444444444444",
+  }));
+
+  assert.deepEqual(events.map((event) => event.type), ["process.error"]);
+  assert.equal(events[0].sessionId, "33333333-3333-4333-8333-333333333333");
+  assert.match(events[0].error, /unexpected session id/);
+  assert.equal(client.sessionId, "");
+});
+
+test("claudecode process client rejects a different session id before the next turn", () => {
+  const client = new ClaudeCodeProcessClient({
+    command: "claude",
+    cwd: "/workspace",
+    env: {},
+  });
+  client.resumeSessionId = "55555555-5555-4555-8555-555555555555";
+  const events = [];
+  client.onMessage((event) => {
+    events.push(event);
+  });
+
+  client.handleLine(JSON.stringify({
+    type: "system",
+    session_id: "66666666-6666-4666-8666-666666666666",
+  }));
+
+  assert.deepEqual(events.map((event) => event.type), ["process.error"]);
+  assert.equal(events[0].sessionId, "55555555-5555-4555-8555-555555555555");
+  assert.equal(events[0].turnId, "");
+  assert.equal(client.sessionId, "");
+  assert.equal(client.resumeSessionId, "55555555-5555-4555-8555-555555555555");
 });
 
 test("handleRuntimeEvent prompts for project shell commands instead of auto-approving them", async () => {
@@ -251,9 +585,6 @@ test("handleCompactCommand invokes runtime compaction for the current thread", a
         calls.push(["queue", threadId, payload.userId, payload.contextToken, payload.provider]);
       },
     },
-    scheduleRuntimeEventWatchdog(payload) {
-      calls.push(["watchdog", payload.threadId, payload.workspaceRoot]);
-    },
     runtimeAdapter: {
       async compactThread(payload) {
         calls.push(["compact", payload.threadId, payload.workspaceRoot, payload.model]);
@@ -290,7 +621,6 @@ test("handleCompactCommand invokes runtime compaction for the current thread", a
 
   assert.deepEqual(calls, [
     ["queue", "thread-1", "user-1", "ctx-1", "weixin"],
-    ["watchdog", "thread-1", "/workspace"],
     ["compact", "thread-1", "/workspace", "claude-sonnet"],
     ["send", "🗜️ Compact request sent\nthread: thread-1"],
   ]);
@@ -802,7 +1132,7 @@ test("handleRuntimeEvent auto-approves allowlisted MCP tool approvals", async ()
   assert.deepEqual(responses, [{ requestId: "req-mcp-allow", decision: "accept" }]);
 });
 
-test("handleSwitchCommand stores the actual claudecode thread returned by runtime", async () => {
+test("handleSwitchCommand stores the verified claudecode thread returned by runtime", async () => {
   const calls = [];
   const appLike = {
     resolveWorkspaceRoot() {
@@ -821,11 +1151,11 @@ test("handleSwitchCommand stores the actual claudecode thread returned by runtim
           buildBindingKey() {
             return "binding-1";
           },
+          getRuntimeParamsForWorkspace() {
+            return { model: "claude-sonnet", modelProvider: "" };
+          },
           setThreadIdForWorkspace(bindingKey, workspaceRoot, threadId) {
             calls.push(["set", bindingKey, workspaceRoot, threadId]);
-          },
-          setPendingThreadIdForWorkspace(bindingKey, workspaceRoot, threadId) {
-            calls.push(["pending", bindingKey, workspaceRoot, threadId]);
           },
         };
       },
@@ -849,8 +1179,7 @@ test("handleSwitchCommand stores the actual claudecode thread returned by runtim
   assert.deepEqual(calls, [
     ["resume", "target-thread", "/workspace"],
     ["set", "binding-1", "/workspace", "actual-thread"],
-    ["pending", "binding-1", "/workspace", "actual-thread"],
-    ["send", "🔁 Thread switch requested\nworkspace: /workspace\ntarget: actual-thread\nIt will be verified on the next normal message."],
+    ["send", "✅ Thread switched\nworkspace: /workspace\nthread: actual-thread"],
   ]);
 });
 
@@ -928,19 +1257,6 @@ test("codex session store does not reuse legacy thread ids without runtime-scope
   assert.equal(codexStore.findBindingForThreadId("legacy-codex-thread"), null);
 });
 
-test("claudecode session store keeps pending thread targets runtime-scoped", () => {
-  const sessionsFile = path.join(
-    os.tmpdir(),
-    `cyberboss-pending-thread-store-${Date.now()}-${Math.random().toString(16).slice(2)}.json`
-  );
-  const claudecodeStore = new SessionStore({ filePath: sessionsFile, runtimeId: "claudecode" });
-  claudecodeStore.setPendingThreadIdForWorkspace("binding-1", "/workspace", "claude-target");
-  const codexStore = new SessionStore({ filePath: sessionsFile, runtimeId: "codex" });
-
-  assert.equal(claudecodeStore.getPendingThreadIdForWorkspace("binding-1", "/workspace"), "claude-target");
-  assert.equal(codexStore.getPendingThreadIdForWorkspace("binding-1", "/workspace"), "");
-});
-
 test("handleStatusCommand asks to configure claudecode context window before showing context", async () => {
   const sent = [];
   const appLike = {
@@ -961,9 +1277,6 @@ test("handleStatusCommand asks to configure claudecode context window before sho
           },
           getThreadIdForWorkspace() {
             return "thread-1";
-          },
-          getPendingThreadIdForWorkspace() {
-            return "";
           },
           getRuntimeParamsForWorkspace() {
             return { model: "" };
@@ -1020,9 +1333,6 @@ test("handleStatusCommand shows approximate context details for claudecode when 
           },
           getThreadIdForWorkspace() {
             return "thread-1";
-          },
-          getPendingThreadIdForWorkspace() {
-            return "";
           },
           getRuntimeParamsForWorkspace() {
             return { model: "kimi-for-coding" };
@@ -1083,9 +1393,6 @@ test("handleStatusCommand asks to reduce claudecode max output tokens when reser
           getThreadIdForWorkspace() {
             return "thread-1";
           },
-          getPendingThreadIdForWorkspace() {
-            return "";
-          },
           getRuntimeParamsForWorkspace() {
             return { model: "kimi-for-coding" };
           },
@@ -1142,9 +1449,6 @@ test("handleStatusCommand shows codex context details", async () => {
           getThreadIdForWorkspace() {
             return "thread-1";
           },
-          getPendingThreadIdForWorkspace() {
-            return "";
-          },
           getRuntimeParamsForWorkspace() {
             return { model: "gpt-5.4" };
           },
@@ -1199,9 +1503,6 @@ test("handleStatusCommand shows codex context as unavailable when no context dat
           getThreadIdForWorkspace() {
             return "thread-1";
           },
-          getPendingThreadIdForWorkspace() {
-            return "";
-          },
           getRuntimeParamsForWorkspace() {
             return { model: "gpt-5.4" };
           },
@@ -1232,3 +1533,17 @@ test("handleStatusCommand shows codex context as unavailable when no context dat
 
   assert.match(sent[0], /📦 context: unavailable/);
 });
+
+async function waitForFileText(filePath, pattern, timeoutMs = 1000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (fs.existsSync(filePath)) {
+      const text = fs.readFileSync(filePath, "utf8");
+      if (!pattern || pattern.test(text)) {
+        return text;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : "";
+}

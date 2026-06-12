@@ -48,6 +48,9 @@ test("handlePreparedMessage queues a normal inbound message while the scope is b
       setReplyTarget() {},
     },
     pendingInboundByScope: new Map(),
+    hasPendingImageInbound() {
+      return false;
+    },
     resolveWorkspaceRoot() {
       return "/workspace";
     },
@@ -66,8 +69,6 @@ test("handlePreparedMessage queues a normal inbound message while the scope is b
     },
     isTurnDispatchBlocked: CyberbossApp.prototype.isTurnDispatchBlocked,
     routePreparedInbound: CyberbossApp.prototype.routePreparedInbound,
-    hasPendingImageInbound() { return false; },
-    pendingImageInboundByScope: new Map(),
   };
 
   await CyberbossApp.prototype.handlePreparedMessage.call(appLike, {
@@ -178,6 +179,9 @@ test("handlePreparedMessage queues while the scope is in a turn-boundary handoff
       setReplyTarget() {},
     },
     pendingInboundByScope: new Map(),
+    hasPendingImageInbound() {
+      return false;
+    },
     resolveWorkspaceRoot() {
       return "/workspace";
     },
@@ -196,8 +200,6 @@ test("handlePreparedMessage queues while the scope is in a turn-boundary handoff
     },
     isTurnDispatchBlocked: CyberbossApp.prototype.isTurnDispatchBlocked,
     routePreparedInbound: CyberbossApp.prototype.routePreparedInbound,
-    hasPendingImageInbound() { return false; },
-    pendingImageInboundByScope: new Map(),
   };
 
   await CyberbossApp.prototype.handlePreparedMessage.call(appLike, {
@@ -245,6 +247,12 @@ test("dispatchPreparedTurn binds reply target to the explicit turn id when runti
         };
       },
     },
+    async buildRuntimeTurn({ prepared }) {
+      return {
+        text: prepared.text,
+        attachments: [],
+      };
+    },
     streamDelivery: {
       bindReplyTargetForTurn(payload) {
         turnBindings.push(payload);
@@ -253,7 +261,6 @@ test("dispatchPreparedTurn binds reply target to the explicit turn id when runti
         queuedBindings.push({ threadId, target });
       },
     },
-    scheduleRuntimeEventWatchdog() {},
   };
 
   const dispatched = await CyberbossApp.prototype.dispatchPreparedTurn.call(appLike, {
@@ -543,13 +550,11 @@ test("flushPendingInboundMessages batches queued messages from the same scope in
     isTurnDispatchBlocked() {
       return false;
     },
-    mergePendingInboundDraft: CyberbossApp.prototype.mergePendingInboundDraft,
-    config: {},
-    runtimeAdapter: { describe() { return { id: "test" }; } },
     async dispatchPreparedTurn(payload) {
       dispatched.push(payload);
       return true;
     },
+    mergePendingInboundDraft: CyberbossApp.prototype.mergePendingInboundDraft,
   };
 
   await CyberbossApp.prototype.flushPendingInboundMessages.call(appLike);
@@ -605,13 +610,11 @@ test("flushPendingInboundMessages falls back to messageId ordering when received
     isTurnDispatchBlocked() {
       return false;
     },
-    mergePendingInboundDraft: CyberbossApp.prototype.mergePendingInboundDraft,
-    config: {},
-    runtimeAdapter: { describe() { return { id: "test" }; } },
     async dispatchPreparedTurn(payload) {
       dispatched.push(payload);
       return true;
     },
+    mergePendingInboundDraft: CyberbossApp.prototype.mergePendingInboundDraft,
   };
 
   await CyberbossApp.prototype.flushPendingInboundMessages.call(appLike);

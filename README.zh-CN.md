@@ -144,6 +144,9 @@ CYBERBOSS_WORKSPACE_ROOT=/绝对路径/你的项目目录
 CYBERBOSS_RUNTIME=copilot
 CYBERBOSS_CODEX_ENDPOINT=ws://127.0.0.1:8765
 CYBERBOSS_CODEX_COMMAND=
+CYBERBOSS_CODEX_MODEL=
+CYBERBOSS_CODEX_MODEL_PROVIDER=
+CYBERBOSS_CODEX_NATIVE_IMAGE_INPUT=
 CYBERBOSS_CLAUDE_COMMAND=claude
 CYBERBOSS_CLAUDE_MODEL=
 CYBERBOSS_CLAUDE_CONTEXT_WINDOW=
@@ -151,6 +154,12 @@ CYBERBOSS_CLAUDE_PERMISSION_MODE=default
 CYBERBOSS_CLAUDE_DISABLE_VERBOSE=false
 CYBERBOSS_CLAUDE_EXTRA_ARGS=
 CLAUDE_CODE_MAX_OUTPUT_TOKENS=
+CYBERBOSS_VISION_MODE=auto
+CYBERBOSS_VISION_PROVIDER=openai-compatible
+CYBERBOSS_VISION_API_BASE_URL=
+CYBERBOSS_VISION_API_KEY=
+CYBERBOSS_VISION_MODEL=
+CYBERBOSS_VISION_TIMEOUT_MS=30000
 CYBERBOSS_ACCOUNT_ID=
 CYBERBOSS_WEIXIN_MIN_CHUNK_CHARS=20
 CYBERBOSS_WEIXIN_BASE_URL=https://ilinkai.weixin.qq.com
@@ -175,6 +184,12 @@ CYBERBOSS_LOCATION_BATTERY_HISTORY_LIMIT=100
   复用已有的共享 Codex app-server，而不是新起私有 runtime。
 - `CYBERBOSS_CODEX_COMMAND`
   当 `codex` 不在 `PATH` 上时，自定义 Codex 启动命令。
+- `CYBERBOSS_CODEX_MODEL`
+  强制 Codex turn 使用指定模型。留空则使用 Codex 默认模型选择。
+- `CYBERBOSS_CODEX_MODEL_PROVIDER`
+  强制 Codex turn 使用指定 provider，例如本地模型可填 `ollama`。留空则使用默认云端 provider。
+- `CYBERBOSS_CODEX_NATIVE_IMAGE_INPUT`
+  Codex app-server 直传图片能力的可选覆盖。留空时按 model metadata 判断；设为 `true` 可直接测试本地多模态模型，设为 `false` 可强制走 caption fallback。
 - `CYBERBOSS_CLAUDE_COMMAND`
   自定义 Claude 启动命令，默认是 `claude`。
 - `CYBERBOSS_CLAUDE_MODEL`
@@ -189,6 +204,12 @@ CYBERBOSS_LOCATION_BATTERY_HISTORY_LIMIT=100
   以逗号分隔的形式追加 Claude CLI 参数。
 - `CLAUDE_CODE_MAX_OUTPUT_TOKENS`
   为 Claude 回复预留输出 token。`/status` 会先从 Claude 上下文窗口里减掉这部分预留量。
+- `CYBERBOSS_VISION_MODE`
+  设置入站图片处理方式：`auto`、`caption`、`native` 或 `off`。`auto` 会在 runtime 支持原生图片输入时直接传图，否则使用 caption。
+- `CYBERBOSS_VISION_PROVIDER`、`CYBERBOSS_VISION_API_BASE_URL`、`CYBERBOSS_VISION_API_KEY`、`CYBERBOSS_VISION_MODEL`
+  配置可选的 OpenAI-compatible 识图 caption API，供 DeepSeek 这类文本模型使用。Qwen/DashScope 可从 [templates/vision-openai-compatible.env](./templates/vision-openai-compatible.env) 开始。
+- `CYBERBOSS_VISION_TIMEOUT_MS`
+  单张图片 caption 请求超时时间。
 - `CYBERBOSS_WEIXIN_MIN_CHUNK_CHARS`
   设置微信短分片合并阈值默认值。
 - `CYBERBOSS_WEIXIN_BASE_URL`、`CYBERBOSS_WEIXIN_CDN_BASE_URL`、`CYBERBOSS_WEIXIN_QR_BOT_TYPE`
@@ -221,6 +242,29 @@ CYBERBOSS_LOCATION_BATTERY_HISTORY_LIMIT=100
 另外，如果你想要更强的“push 感”，建议一开始先不要主动大改 instructions 模板。先让 agent 在真实交流里自己更新行为，再回头只修明显不对的部分。
 
 如果你要跑共享线程，建议也在第一次启动前就把 `CYBERBOSS_WORKSPACE_ROOT` 配好。这样 `shared:open` 会优先接到你当前项目对应的那条线程，而不是回退到别的历史绑定。
+
+如果你使用 Ollama 这类本地 Codex provider，推荐用一个很小的 wrapper script，不要直接把 provider flags 塞进 `CYBERBOSS_CODEX_COMMAND`。把 [templates/codex-local-provider.sh](./templates/codex-local-provider.sh) 复制到 `${HOME}/.cyberboss/codex-local`，给它执行权限，并让 Cyberboss 使用这个 wrapper：
+
+```bash
+cp ./templates/codex-local-provider.sh "${HOME}/.cyberboss/codex-local"
+chmod +x "${HOME}/.cyberboss/codex-local"
+```
+
+```dotenv
+CYBERBOSS_CODEX_COMMAND=/绝对路径/.cyberboss/codex-local
+CYBERBOSS_CODEX_MODEL_PROVIDER=ollama
+CYBERBOSS_CODEX_MODEL=gemma4:26b-32k
+```
+
+这个模板会把云端和本地启动逻辑收敛在同一个 command 里。切回云端 provider 时，清空 `CYBERBOSS_CODEX_MODEL_PROVIDER` 和 `CYBERBOSS_CODEX_MODEL`，然后重启共享桥接，让 Codex app-server 用新的 command 环境启动。
+
+本地 Codex 模型还需要 model metadata。如果 `CYBERBOSS_CODEX_MODEL` 指向的模型不在 Codex 内置 catalog 里，需要在 Codex home 里放一份模型 catalog，并在 `~/.codex/config.toml` 里引用：
+
+```toml
+model_catalog_json = "/绝对路径/.codex/local-models.json"
+```
+
+这份文件应基于你现有的 Codex model catalog 生成，再追加本地模型条目。每个本地模型条目至少要和实际模型 slug 对齐，并写清楚正确的 `context_window`、`max_context_window`、`input_modalities` 和 truncation policy。不要只保留本地模型而删掉云端模型条目。配置后用 `codex debug models` 验证；本地模型应该能被列出，并且不应再出现 fallback metadata 警告。
 
 当 `CYBERBOSS_RUNTIME=claudecode` 时，Cyberboss 会在当前工作区自动补写 `.mcp.json` 里的 `cyberboss_tools`，并在启动 Claude 时显式挂上这份 MCP 配置。Claude 能发现 Cyberboss project tools，靠的就是这条项目本地配置，而不是全局注册。
 

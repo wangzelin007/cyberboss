@@ -23,9 +23,9 @@
 </div>
 
 <p align="center">
-  <img src="./docs/images/IMG_0241.PNG" alt="Cyberboss demo 1" width="31%" />
-  <img src="./docs/images/IMG_0244.PNG" alt="Cyberboss demo 2" width="31%" />
-  <img src="./docs/images/IMG_0245.PNG" alt="Cyberboss demo 3" width="31%" />
+  <img src="./docs/images/IMG_0241.PNG" alt="Cyberboss English demo 1" width="31%" />
+  <img src="./docs/images/IMG_0244.PNG" alt="Cyberboss English demo 2" width="31%" />
+  <img src="./docs/images/IMG_0245.PNG" alt="Cyberboss English demo 3" width="31%" />
 </p>
 
 Cyberboss is not another polite productivity timer. It is not a to-do list with better branding either.
@@ -139,6 +139,8 @@ Common optional variables:
 CYBERBOSS_RUNTIME=copilot
 CYBERBOSS_CODEX_ENDPOINT=ws://127.0.0.1:8765
 CYBERBOSS_CODEX_COMMAND=
+CYBERBOSS_CODEX_MODEL=
+CYBERBOSS_CODEX_MODEL_PROVIDER=
 CYBERBOSS_CLAUDE_COMMAND=claude
 CYBERBOSS_CLAUDE_MODEL=
 CYBERBOSS_CLAUDE_CONTEXT_WINDOW=
@@ -151,6 +153,15 @@ CYBERBOSS_WEIXIN_MIN_CHUNK_CHARS=20
 CYBERBOSS_WEIXIN_BASE_URL=https://ilinkai.weixin.qq.com
 CYBERBOSS_WEIXIN_CDN_BASE_URL=https://novac2c.cdn.weixin.qq.com/c2c
 CYBERBOSS_WEIXIN_QR_BOT_TYPE=3
+CYBERBOSS_ENABLE_LOCATION_SERVER=false
+CYBERBOSS_LOCATION_HOST=0.0.0.0
+CYBERBOSS_LOCATION_PORT=4318
+CYBERBOSS_LOCATION_TOKEN=
+CYBERBOSS_LOCATION_HOME_CENTER=
+CYBERBOSS_LOCATION_WORK_CENTER=
+CYBERBOSS_LOCATION_KNOWN_PLACES=
+CYBERBOSS_LOCATION_PLACE_RADIUS_METERS=150
+CYBERBOSS_LOCATION_BATTERY_HISTORY_LIMIT=100
 ```
 
 What these do:
@@ -161,6 +172,10 @@ What these do:
   Reuse an existing shared Codex app-server instead of spawning a private runtime.
 - `CYBERBOSS_CODEX_COMMAND`
   Override the Codex launcher when `codex` is not directly on your `PATH`.
+- `CYBERBOSS_CODEX_MODEL`
+  Force Codex turns to use a specific model. Leave empty to use Codex's default model selection.
+- `CYBERBOSS_CODEX_MODEL_PROVIDER`
+  Force Codex turns to use a specific provider, such as `ollama` for local models. Leave empty for the default cloud provider.
 - `CYBERBOSS_CLAUDE_COMMAND`
   Override the Claude launcher. Default is `claude`.
 - `CYBERBOSS_CLAUDE_MODEL`
@@ -179,15 +194,54 @@ What these do:
   Set the default minimum merge size for short WeChat reply chunks.
 - `CYBERBOSS_WEIXIN_BASE_URL`, `CYBERBOSS_WEIXIN_CDN_BASE_URL`, `CYBERBOSS_WEIXIN_QR_BOT_TYPE`
   Override the WeChat bridge endpoints and QR bot type when your deployment needs it.
+- `CYBERBOSS_ENABLE_LOCATION_SERVER`
+  Enable the built-in whereabouts HTTP ingest server.
+- `CYBERBOSS_LOCATION_HOST`
+  Host for the built-in whereabouts HTTP server. Default is `0.0.0.0`.
+- `CYBERBOSS_LOCATION_PORT`
+  Port for the built-in whereabouts HTTP server. Default is `4318`.
+- `CYBERBOSS_LOCATION_TOKEN`
+  Bearer token used to upload location data.
+- `CYBERBOSS_LOCATION_HOME_CENTER`, `CYBERBOSS_LOCATION_WORK_CENTER`
+  Home and work center coordinates in `lat,lng` format.
+- `CYBERBOSS_LOCATION_KNOWN_PLACES`
+  Extra named places as a JSON array.
+- `CYBERBOSS_LOCATION_PLACE_RADIUS_METERS`
+  Radius for place-tag matching. Default is `150`.
+- `CYBERBOSS_LOCATION_BATTERY_HISTORY_LIMIT`
+  Number of battery observations to retain. Default is `100`.
 
 Why this matters:
 
 - the first `cyberboss` command auto-generates `~/.cyberboss/weixin-instructions.md`
 - if `CYBERBOSS_USER_NAME` and `CYBERBOSS_USER_GENDER` are missing, that generated persona file may start from the wrong assumptions
 
-If you want the strongest sense of pressure, do not rewrite the persona template by hand too early. Let the agent develop its rhythm through real conversation first, then edit only the parts that are clearly wrong.
+If you want the strongest "push" effect, do not immediately rewrite the persona template by hand. Let the agent develop its rhythm through real conversation first, then edit only the parts that are clearly wrong.
 
 If you plan to use shared mode, set `CYBERBOSS_WORKSPACE_ROOT` before the first start so `shared:open` resolves the right thread for the right project.
+
+If you use a local Codex provider such as Ollama, prefer a small wrapper script instead of putting provider flags directly into `CYBERBOSS_CODEX_COMMAND`. Copy [templates/codex-local-provider.sh](./templates/codex-local-provider.sh) to `${HOME}/.cyberboss/codex-local`, make it executable, and point Cyberboss at it:
+
+```bash
+cp ./templates/codex-local-provider.sh "${HOME}/.cyberboss/codex-local"
+chmod +x "${HOME}/.cyberboss/codex-local"
+```
+
+```dotenv
+CYBERBOSS_CODEX_COMMAND=/absolute/path/to/.cyberboss/codex-local
+CYBERBOSS_CODEX_MODEL_PROVIDER=ollama
+CYBERBOSS_CODEX_MODEL=gemma4:26b-32k
+```
+
+The template keeps cloud and local startup behavior in one command. When you switch back to the cloud provider, clear `CYBERBOSS_CODEX_MODEL_PROVIDER` and `CYBERBOSS_CODEX_MODEL`, then restart the shared bridge so the Codex app-server is launched with the new command environment.
+
+Local Codex models also need model metadata. If `CYBERBOSS_CODEX_MODEL` points at a model that is not in Codex's built-in catalog, add a model catalog file in your Codex home and reference it from `~/.codex/config.toml`:
+
+```toml
+model_catalog_json = "/absolute/path/to/.codex/local-models.json"
+```
+
+Build that file from your existing Codex model catalog and add entries for your local model slugs, including the correct `context_window`, `max_context_window`, `input_modalities`, and truncation policy. Keep the cloud model entries in the catalog. Verify with `codex debug models`; Codex should list the local model and should not warn that it is using fallback metadata.
 
 When `CYBERBOSS_RUNTIME=claudecode`, Cyberboss also upserts a workspace-local `.mcp.json` entry for `cyberboss_tools` before starting Claude, and launches Claude with that MCP config explicitly attached. That is how Claude discovers the Cyberboss project tools without any global registration.
 
@@ -307,6 +361,14 @@ Common contents:
   WeChat long-poll synchronization buffers
 - `inbox/`
   saved incoming WeChat images and attachments
+- `stickers/`
+  sticker assets, including:
+  - `assets/`
+    saved sticker media, currently normalized to GIF
+  - `index.json`
+    sticker index mapping `stickerId -> { tags, desc }`
+  - `tags.json`
+    sticker tag catalog, editable by both the AI and the user
 - `weixin-instructions.md`
   local persona file generated on first run
 - `reminder-queue.json`
@@ -328,6 +390,29 @@ Common contents:
 
 This is the runtime state directory, not your project workspace. The WeChat thread and the terminal thread should still be opened against your actual project directory.
 
+### Whereabouts Notes
+
+- Cyberboss already bundles `whereabouts-mcp` and can ingest phone location, battery, and trigger context directly.
+- To enable the built-in whereabouts server, configure at least:
+  - `CYBERBOSS_ENABLE_LOCATION_SERVER=true`
+  - `CYBERBOSS_LOCATION_TOKEN=<your_token>`
+  - `CYBERBOSS_LOCATION_HOME_CENTER=lat,lng`
+- Common optional variables:
+  - `CYBERBOSS_LOCATION_HOST`
+  - `CYBERBOSS_LOCATION_WORK_CENTER`
+  - `CYBERBOSS_LOCATION_KNOWN_PLACES`
+  - `CYBERBOSS_LOCATION_PLACE_RADIUS_METERS`
+  - `CYBERBOSS_LOCATION_BATTERY_HISTORY_LIMIT`
+- The built-in server listens on `http://0.0.0.0:4318` by default. The ingest endpoint is `POST /location/ingest`, and health checks use `GET /healthz`.
+- Whereabouts data is stored in `${HOME}/.cyberboss/locations.json`, not in your project directory.
+
+### Sticker Notes
+
+- On the current WeChat bridge path, do not rely on animated playback for inbound or outbound stickers. A GIF may still show up as a static image in chat.
+- Because of that, saved stickers are currently normalized to GIF at intake so the asset format is already aligned if WeChat later opens a fuller sticker capability.
+- The tag catalog lives at `${HOME}/.cyberboss/stickers/tags.json`. The AI reads from it, and users can edit it directly.
+- For now, sticker retrieval is tag-filtered only. There is no vector-database recall layer.
+
 <a id="agent-guide"></a>
 ## Agent Guide
 
@@ -343,6 +428,17 @@ Agent-facing Cyberboss capabilities are project-native structured tools.
 - `cyberboss_timeline_dev`
 - `cyberboss_timeline_screenshot`
 - `cyberboss_channel_send_file`
+- `whereabouts_current_stay`
+- `whereabouts_recent_stays`
+- `whereabouts_recent_moves`
+- `whereabouts_snapshot`
+- `whereabouts_summary`
+- `cyberboss_sticker_tags`
+- `cyberboss_sticker_pick`
+- `cyberboss_sticker_send`
+- `cyberboss_sticker_delete`
+- `cyberboss_sticker_save_from_inbox`
+- `cyberboss_sticker_update`
 - `cyberboss_system_send`
 
 ### Agent conventions
@@ -372,7 +468,7 @@ Because the first `cyberboss` command auto-generates `~/.cyberboss/weixin-instru
 
 ### Why not rewrite instructions aggressively from day one?
 
-If you want the strongest Cyberboss effect, let the agent develop its pacing through real interaction first. If you over-script it too early, it starts sounding like a workflow script instead of an active companion.
+If you want the strongest "cyberboss" effect, let the agent grow its pacing through real interaction first. If you over-script it too early, it starts sounding like a workflow script instead of an active companion.
 
 ## License
 

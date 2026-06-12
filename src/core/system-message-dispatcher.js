@@ -51,7 +51,7 @@ function buildSystemInboundText(text, createdAt = "", timezone) {
     "Return exactly one JSON object after any tool calls:",
     "{\"action\":\"silent\"}",
     "{\"action\":\"send_message\",\"message\":\"<one short natural WeChat message>\"}",
-    "No reasoning. No text outside the JSON.",
+    "No markdown fences. No reasoning. No text outside the JSON.",
   ];
   if (body) {
     sections.push("", "Trigger:", body);
