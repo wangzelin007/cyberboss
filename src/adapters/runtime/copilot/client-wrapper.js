@@ -146,7 +146,10 @@ class CopilotSdkClient {
       if (err instanceof Error) {
         error = err;
       } else if (err && typeof err === "object") {
-        const msg = err.message || (err.data && err.data.message) || JSON.stringify(err);
+        let msg = err.message || (err.data && err.data.message) || "";
+        if (!msg) {
+          try { msg = JSON.stringify(err); } catch { msg = "Unknown runtime error (unserializable)"; }
+        }
         error = new Error(msg);
       } else {
         error = new Error(String(err));
