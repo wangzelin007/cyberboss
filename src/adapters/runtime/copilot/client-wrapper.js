@@ -6,7 +6,6 @@
 // live in `index.js` and `events.js` respectively.
 
 const { CopilotClient } = require("@github/copilot-sdk");
-
 class CopilotSdkClient {
   constructor({
     command = "",
@@ -143,7 +142,15 @@ class CopilotSdkClient {
       this.emit({ type: "idle", payload: (event && event.data) || {} }, event);
     };
     const onError = (err) => {
-      const error = err instanceof Error ? err : new Error(String(err));
+      let error;
+      if (err instanceof Error) {
+        error = err;
+      } else if (err && typeof err === "object") {
+        const msg = err.message || (err.data && err.data.message) || JSON.stringify(err);
+        error = new Error(msg);
+      } else {
+        error = new Error(String(err));
+      }
       this.emit({ type: "error", error, message: error.message }, err);
     };
     const onUsageInfo = (event) => {
